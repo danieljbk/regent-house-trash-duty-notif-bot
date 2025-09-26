@@ -166,18 +166,23 @@ export default {
         const penaltyPending = penaltyRecorded && !penaltyActive
 
         if (penaltyPending || penaltyActive) {
-          const weekString = weeksRemaining === 1 ? 'week' : 'weeks'
+          const displayWeeksRemaining = penaltyActive
+            ? weeksRemaining + 1
+            : weeksRemaining
+          const weekString = 
+            displayWeeksRemaining === 1 ? 'week' : 'weeks'
           let bannerText = ''
 
           if (penaltyActive) {
-            bannerText = `PENALTY ACTIVE: ${offender.name} has ${weeksRemaining} ${weekString} remaining. The normal rotation is paused.`
+            bannerText = `PENALTY ACTIVE: ${offender.name} has ${displayWeeksRemaining} ${weekString} remaining. The normal rotation is paused.`
           } else {
-            bannerText = `Penalty recorded: ${offender.name} owes ${weeksRemaining} ${weekString}. The rotation will pause after this week.`
+            bannerText = `Penalty recorded: ${offender.name} owes ${displayWeeksRemaining} ${weekString}. The rotation will pause after this week.`
           }
 
           penaltyInfo = {
             offenderName: offender.name,
-            weeksRemaining,
+            weeksRemaining: displayWeeksRemaining,
+            rawWeeksRemaining: weeksRemaining,
             weekString,
             isActive: penaltyActive,
             startsNextRotation: penaltyPending,
