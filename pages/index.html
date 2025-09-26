@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Team Rotation Schedule</title>
+    <link rel="stylesheet" href="https://cdn.simplecss.org/simple.min.css" />
+    <style>
+      /* Add some styling for the report section */
+      .danger-zone {
+        border: 2px solid #d9534f;
+        padding: 1rem;
+        margin-top: 2rem;
+        border-radius: 8px;
+      }
+      .danger-zone button {
+        background-color: #d9534f;
+        color: white;
+        border: none;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Team Rotation Schedule</h1>
+      <p id="penalty-status" style="color: #d9534f; font-weight: bold"></p>
+    </header>
+    <main>
+      <h2>🎯 On Duty This Week</h2>
+      <p id="on-duty">Loading...</p>
+
+      <h2>⏮️ Last Week</h2>
+      <p id="last-week">Loading...</p>
+
+      <h2>🗓️ Coming Up</h2>
+      <ul id="upcoming-list">
+        <li>Loading...</li>
+      </ul>
+
+      <div class="danger-zone">
+        <h3>Missed Duty?</h3>
+        <p>
+          If the person on duty last week (<strong id="last-week-report"
+            >...</strong
+          >) did not complete the task, press this button to assign them a
+          3-week penalty.
+        </p>
+        <button id="report-button">Report Missed Duty</button>
+        <p id="report-response"></p>
+      </div>
+    </main>
+    <script src="script.js"></script>
+  </body>
+</html>
