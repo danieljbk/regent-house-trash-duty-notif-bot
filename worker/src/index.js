@@ -1,12 +1,18 @@
+// ===================================================================================
+// FINAL AND COMPLETE index.js
+// This file contains all logic for the Worker.
+// ===================================================================================
+
 export default {
   /**
-   * This is the main automated function. It runs on a Cron Trigger (e.g., once a week).
+   * SCHEDULED HANDLER
+   * Runs on a cron schedule to send notifications.
    */
   async scheduled(event, env, ctx) {
-    // 1. Get all necessary data from our Cloudflare KV database
+    // 1. Get current state from KV
     const team = await env.ROTATION_DB.get('TEAM_MEMBERS', 'json')
     if (!team || team.length === 0) {
-      console.error('FATAL: Team data is missing or empty. Halting execution.')
+      console.error('FATAL: Team data is missing or empty.')
       return
     }
     let currentIndex = parseInt(
@@ -15,40 +21,35 @@ export default {
     const penaltyBox = (await env.ROTATION_DB.get('PENALTY_BOX', 'json')) || {}
     const teamSize = team.length
 
-    // --- THE CRUCIAL CHANGE: UPDATE THE STATE FOR THE NEW WEEK *FIRST* ---
+    // 2. IMPORTANT: Update the state for the NEW week *first*
     const isPenaltyActive =
       penaltyBox.weeksRemaining && penaltyBox.weeksRemaining > 0
 
     if (isPenaltyActive) {
-      // If a penalty is active, we just decrement the weeks. The index does not change.
       penaltyBox.weeksRemaining--
       await env.ROTATION_DB.put('PENALTY_BOX', JSON.stringify(penaltyBox))
     } else {
-      // If there is no penalty, we advance the rotation index. This is the official "changing of the guard".
       currentIndex = (currentIndex + 1) % teamSize
       await env.ROTATION_DB.put('CURRENT_INDEX', currentIndex.toString())
     }
-    // --- END OF STATE UPDATE ---
 
-    // Now that the state is updated, the rest of the function reports on this NEW state.
-
+    // 3. Determine who is on duty for THIS week and NEXT week based on the new state
     let personOnDuty
     let nextPersonUp
 
     if (isPenaltyActive) {
       personOnDuty = team[penaltyBox.offenderIndex]
       if (penaltyBox.weeksRemaining >= 1) {
-        // Use >=1 because we already decremented
-        nextPersonUp = personOnDuty // Penalty continues
+        nextPersonUp = personOnDuty
       } else {
-        nextPersonUp = team[currentIndex] // Penalty ends, normal rotation resumes next
+        nextPersonUp = team[currentIndex]
       }
     } else {
-      personOnDuty = team[currentIndex] // Normal rotation
+      personOnDuty = team[currentIndex]
       nextPersonUp = team[(currentIndex + 1) % teamSize]
     }
 
-    // The rest of the message generation logic is identical, as it correctly reads the variables.
+    // 4. Loop through and send personalized, grammar-aware SMS messages
     for (const [personIndex, person] of team.entries()) {
       let personalStatus = ''
       const thisWeekDate = new Date()
@@ -64,7 +65,7 @@ export default {
           const normalWeeksUntilTurn =
             (personIndex - currentIndex + teamSize) % teamSize
           const weeksUntilTurn =
-            normalWeeksUntilTurn + penaltyBox.weeksRemaining + 1 // +1 because the penalty is still finishing
+            normalWeeksUntilTurn + penaltyBox.weeksRemaining + 1
           const theirTurnDate = new Date()
           theirTurnDate.setDate(thisWeekDate.getDate() + weeksUntilTurn * 7)
           const weekString = weeksUntilTurn === 1 ? 'week' : 'weeks'
@@ -108,12 +109,13 @@ export default {
   },
 
   /**
-   * This function acts as our API. It listens for requests from the frontend dashboard.
+   * FETCH HANDLER
+   * Responds to requests from the website to provide schedule data.
    */
   async fetch(request, env, ctx) {
     const url = new URL(request.url)
     const corsHeaders = {
-      'Access-Control-Allow-Origin': '*', // This is the crucial permission header
+      'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
       'Access-Control-Allow-Headers': 'Content-Type',
     }
@@ -131,9 +133,9 @@ export default {
         (await env.ROTATION_DB.get('PENALTY_BOX', 'json')) || {}
       const teamSize = team.length
 
-      let onDutyName
-      let lastWeekName
-      let penaltyInfo = {}
+      let onDutyName,
+        lastWeekName,
+        penaltyInfo = {}
       const isPenaltyActive =
         penaltyBox.weeksRemaining && penaltyBox.weeksRemaining > 0
 
@@ -163,7 +165,6 @@ export default {
         penaltyInfo: penaltyInfo,
       }
 
-      // ** THE FIX IS HERE: We are adding the `headers` object back to the response **
       return new Response(JSON.stringify(responseData), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       })
@@ -185,7 +186,6 @@ export default {
           'Penalty has been recorded. The schedule will update on the next rotation.',
       }
 
-      // ** THE FIX IS ALSO HERE: Adding headers to the report response **
       return new Response(JSON.stringify(responseData), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       })
@@ -195,7 +195,7 @@ export default {
   },
 }
 
-// --- HELPER FUNCTIONS --- (No changes below this line)
+// --- HELPER FUNCTIONS ---
 
 async function sendSms(env, to, body) {
   const url = `https://api.twilio.com/2010-04-01/Accounts/${env.TWILIO_ACCOUNT_SID}/Messages.json`
