@@ -126,7 +126,19 @@ async function fetchSchedule() {
 
     // --- 5. Handle Penalty Banner ---
     if (data.penaltyInfo && data.penaltyInfo.weeksRemaining > 0) {
-      penaltyStatusEl.textContent = `PENALTY ACTIVE: ${data.onDuty} has ${data.penaltyInfo.weeksRemaining} ${data.penaltyInfo.weekString} remaining. The normal rotation is paused.`
+      const info = data.penaltyInfo
+      const offenderName = info.offenderName || data.lastWeek
+      let bannerText = ''
+
+      if (info.isActive) {
+        bannerText = `PENALTY ACTIVE: ${offenderName} has ${info.weeksRemaining} ${info.weekString} remaining. The normal rotation is paused.`
+      } else if (info.startsNextRotation) {
+        bannerText = `Penalty recorded: ${offenderName} owes ${info.weeksRemaining} ${info.weekString}. The rotation will pause after this week.`
+      } else {
+        bannerText = `Penalty recorded for ${offenderName}.`
+      }
+
+      penaltyStatusEl.textContent = bannerText
       penaltyStatusEl.style.display = 'block'
     } else {
       penaltyStatusEl.style.display = 'none'

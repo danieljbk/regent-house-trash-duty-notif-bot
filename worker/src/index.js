@@ -135,30 +135,46 @@ export default {
         const currentIndex = parseInt(
           (await rotationDb.get('CURRENT_INDEX')) || '0'
         )
-        const penaltyBox = (await rotationDb.get('PENALTY_BOX', 'json')) || {}
+        const rawPenaltyBox =
+          (await rotationDb.get('PENALTY_BOX', 'json')) || {}
         const teamSize = team.length
 
-        let onDutyName,
-          lastWeekName,
-          penaltyInfo = {}
-        const isPenaltyActive =
-          penaltyBox.weeksRemaining && penaltyBox.weeksRemaining > 0
+        const baseLastWeekIndex = (currentIndex - 1 + teamSize) % teamSize
+        let onDutyName = team[currentIndex].name
+        let lastWeekName = team[baseLastWeekIndex].name
+        let penaltyInfo = {}
 
-        if (isPenaltyActive) {
-          onDutyName = team[penaltyBox.offenderIndex].name
-          const weekString = penaltyBox.weeksRemaining === 1 ? 'week' : 'weeks'
+        const offenderIndex = Number.isInteger(rawPenaltyBox.offenderIndex)
+          ? rawPenaltyBox.offenderIndex
+          : undefined
+        const weeksRemaining = Number.isInteger(rawPenaltyBox.weeksRemaining)
+          ? rawPenaltyBox.weeksRemaining
+          : 0
+        const offender =
+          offenderIndex !== undefined ? team[offenderIndex] : undefined
+        const PENALTY_LENGTH = 3
+        const penaltyRecorded = offender && weeksRemaining > 0
+        const penaltyPending =
+          penaltyRecorded && weeksRemaining === PENALTY_LENGTH
+        const penaltyActive =
+          penaltyRecorded && weeksRemaining < PENALTY_LENGTH
+
+        if (penaltyPending || penaltyActive) {
+          const weekString = weeksRemaining === 1 ? 'week' : 'weeks'
           penaltyInfo = {
-            weeksRemaining: penaltyBox.weeksRemaining,
-            weekString: weekString,
+            offenderName: offender.name,
+            weeksRemaining,
+            weekString,
+            isActive: penaltyActive,
+            startsNextRotation: penaltyPending,
           }
-          if (penaltyBox.weeksRemaining < 3) {
-            lastWeekName = onDutyName
-          } else {
-            lastWeekName = team[(currentIndex - 1 + teamSize) % teamSize].name
-          }
-        } else {
-          onDutyName = team[currentIndex].name
-          lastWeekName = team[(currentIndex - 1 + teamSize) % teamSize].name
+        }
+
+        if (penaltyPending) {
+          lastWeekName = offender.name
+        } else if (penaltyActive) {
+          onDutyName = offender.name
+          lastWeekName = offender.name
         }
 
         const responseData = {
@@ -166,7 +182,7 @@ export default {
           lastWeek: lastWeekName,
           team: team,
           currentIndex: currentIndex,
-          penaltyBox: penaltyBox,
+          penaltyBox: rawPenaltyBox,
           penaltyInfo: penaltyInfo,
         }
 
