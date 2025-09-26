@@ -1,7 +1,4 @@
-// FINAL VERSION: script.js
-
-const WORKER_URL =
-  'https://regent-house-trash-duty-notif-worker.djbkwon.workers.dev'
+const WORKER_URL = 'https://trashbotapi.kwon.ai'
 
 // Get references to all the HTML elements
 const onDutyEl = document.getElementById('on-duty')

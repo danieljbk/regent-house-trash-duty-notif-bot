@@ -1,8 +1,3 @@
-// ===================================================================================
-// FINAL AND COMPLETE index.js
-// This file contains all logic for the Worker.
-// ===================================================================================
-
 export default {
   /**
    * SCHEDULED HANDLER
@@ -23,9 +18,7 @@ export default {
       console.error('FATAL: Team data is missing or empty.')
       return
     }
-    let currentIndex = parseInt(
-      (await rotationDb.get('CURRENT_INDEX')) || '0'
-    )
+    let currentIndex = parseInt((await rotationDb.get('CURRENT_INDEX')) || '0')
     const penaltyBox = (await rotationDb.get('PENALTY_BOX', 'json')) || {}
     const teamSize = team.length
 
@@ -142,8 +135,7 @@ export default {
         const currentIndex = parseInt(
           (await rotationDb.get('CURRENT_INDEX')) || '0'
         )
-        const penaltyBox =
-          (await rotationDb.get('PENALTY_BOX', 'json')) || {}
+        const penaltyBox = (await rotationDb.get('PENALTY_BOX', 'json')) || {}
         const teamSize = team.length
 
         let onDutyName,
@@ -184,7 +176,9 @@ export default {
       } catch (error) {
         console.error('Failed to load schedule:', error.message)
         return new Response(
-          JSON.stringify({ error: 'Server configuration error. Please try again later.' }),
+          JSON.stringify({
+            error: 'Server configuration error. Please try again later.',
+          }),
           {
             status: 500,
             headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -200,7 +194,9 @@ export default {
       } catch (error) {
         console.error(error.message)
         return new Response(
-          JSON.stringify({ error: 'Server configuration error. Please try again later.' }),
+          JSON.stringify({
+            error: 'Server configuration error. Please try again later.',
+          }),
           {
             status: 500,
             headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -210,7 +206,9 @@ export default {
       const teamData = await rotationDb.get('TEAM_MEMBERS', 'json')
       if (!Array.isArray(teamData) || teamData.length === 0) {
         return new Response(
-          JSON.stringify({ error: 'Team data is missing. Penalty cannot be recorded.' }),
+          JSON.stringify({
+            error: 'Team data is missing. Penalty cannot be recorded.',
+          }),
           {
             status: 500,
             headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -236,7 +234,7 @@ export default {
       })
     }
 
-    return new Response('Not Found', { status: 404 })
+    return new Response('Not Found', { status: 404, headers: corsHeaders })
   },
 }
 
