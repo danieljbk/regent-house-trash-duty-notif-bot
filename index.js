@@ -1,7 +1,6 @@
 export default {
   /**
    * This is the main automated function. It runs on a Cron Trigger (e.g., once a week).
-   * Its job is to calculate the schedule, send all notifications, and update the state for the next week.
    */
   async scheduled(event, env, ctx) {
     // 1. Get all necessary data from our Cloudflare KV database
@@ -13,73 +12,97 @@ export default {
     let currentIndex = parseInt(
       (await env.ROTATION_DB.get('CURRENT_INDEX')) || '0'
     )
-    const startDate = new Date(await env.ROTATION_DB.get('ROTATION_START_DATE'))
     const penaltyBox = (await env.ROTATION_DB.get('PENALTY_BOX', 'json')) || {}
     const teamSize = team.length
 
-    let personOnDuty
-    let isPenaltyWeek = false
+    // --- THE CRUCIAL CHANGE: UPDATE THE STATE FOR THE NEW WEEK *FIRST* ---
+    const isPenaltyActive =
+      penaltyBox.weeksRemaining && penaltyBox.weeksRemaining > 0
 
-    // 2. Core Logic: Check if there's an active penalty
-    if (penaltyBox.weeksRemaining && penaltyBox.weeksRemaining > 0) {
-      // PENALTY LOGIC: Someone is serving a penalty.
-      isPenaltyWeek = true
-      personOnDuty = team[penaltyBox.offenderIndex] // The offender is on duty.
-      penaltyBox.weeksRemaining-- // Decrement their remaining weeks.
+    if (isPenaltyActive) {
+      // If a penalty is active, we just decrement the weeks. The index does not change.
+      penaltyBox.weeksRemaining--
       await env.ROTATION_DB.put('PENALTY_BOX', JSON.stringify(penaltyBox))
-      // IMPORTANT: We do NOT advance the currentIndex. The normal rotation is paused.
     } else {
-      // NORMAL LOGIC: No penalty, run the standard rotation.
-      personOnDuty = team[currentIndex]
-      const nextIndex = (currentIndex + 1) % teamSize
-      await env.ROTATION_DB.put('CURRENT_INDEX', nextIndex.toString())
+      // If there is no penalty, we advance the rotation index. This is the official "changing of the guard".
+      currentIndex = (currentIndex + 1) % teamSize
+      await env.ROTATION_DB.put('CURRENT_INDEX', currentIndex.toString())
+    }
+    // --- END OF STATE UPDATE ---
+
+    // Now that the state is updated, the rest of the function reports on this NEW state.
+
+    let personOnDuty
+    let nextPersonUp
+
+    if (isPenaltyActive) {
+      personOnDuty = team[penaltyBox.offenderIndex]
+      if (penaltyBox.weeksRemaining >= 1) {
+        // Use >=1 because we already decremented
+        nextPersonUp = personOnDuty // Penalty continues
+      } else {
+        nextPersonUp = team[currentIndex] // Penalty ends, normal rotation resumes next
+      }
+    } else {
+      personOnDuty = team[currentIndex] // Normal rotation
+      nextPersonUp = team[(currentIndex + 1) % teamSize]
     }
 
-    // 3. Prepare data for SMS notifications
-    const nextPersonInRotation = team[(currentIndex + 1) % teamSize]
-    const thisWeekDate = new Date() // Use today's date for "this week"
-    const nextWeekDate = new Date()
-    nextWeekDate.setDate(thisWeekDate.getDate() + 7)
-
-    // 4. Loop through EVERYONE on the team to send them a personalized status update
+    // The rest of the message generation logic is identical, as it correctly reads the variables.
     for (const [personIndex, person] of team.entries()) {
-      let weeksUntilTurn
-      if (isPenaltyWeek && penaltyBox.offenderIndex === personIndex) {
-        weeksUntilTurn = 0 // If they are the offender, it's their turn.
-      } else {
-        // Calculate normal turn distance, ignoring any penalty
-        weeksUntilTurn = (personIndex - currentIndex + teamSize) % teamSize
-      }
-
-      const theirTurnDate = new Date()
-      theirTurnDate.setDate(theirTurnDate.getDate() + weeksUntilTurn * 7)
-
-      // 5. Build the unique message for each person
       let personalStatus = ''
-      if (weeksUntilTurn === 0) {
-        personalStatus = `It's your turn this week, ${person.name}!`
-        if (isPenaltyWeek) {
-          personalStatus += ` This is week ${
+      const thisWeekDate = new Date()
+
+      if (isPenaltyActive) {
+        if (personIndex === penaltyBox.offenderIndex) {
+          personalStatus = `⚠️ ${
+            person.name
+          }, you are on Trash Duty.\nThis is week ${
             3 - penaltyBox.weeksRemaining
           } of 3 for your penalty.`
+        } else {
+          const normalWeeksUntilTurn =
+            (personIndex - currentIndex + teamSize) % teamSize
+          const weeksUntilTurn =
+            normalWeeksUntilTurn + penaltyBox.weeksRemaining + 1 // +1 because the penalty is still finishing
+          const theirTurnDate = new Date()
+          theirTurnDate.setDate(thisWeekDate.getDate() + weeksUntilTurn * 7)
+          const weekString = weeksUntilTurn === 1 ? 'week' : 'weeks'
+          personalStatus = `${
+            person.name
+          }, your next Trash Duty is in ${weeksUntilTurn} ${weekString} (week of ${formatDate(
+            theirTurnDate
+          )}).`
         }
-      } else if (weeksUntilTurn === 1 && !isPenaltyWeek) {
-        personalStatus = `Hi ${person.name}, your turn is next week.`
       } else {
-        personalStatus = `${person.name}, your next turn is on ${formatDate(
-          theirTurnDate
-        )}, in ${weeksUntilTurn} weeks.`
+        const weeksUntilTurn =
+          (personIndex - currentIndex + teamSize) % teamSize
+        const theirTurnDate = new Date()
+        theirTurnDate.setDate(thisWeekDate.getDate() + weeksUntilTurn * 7)
+        if (weeksUntilTurn === 0) {
+          personalStatus = `${
+            person.name
+          }, you are on Trash Duty this week (week of ${formatDate(
+            theirTurnDate
+          )}).`
+        } else {
+          const weekString = weeksUntilTurn === 1 ? 'week' : 'weeks'
+          personalStatus = `${
+            person.name
+          }, your next Trash Duty is in ${weeksUntilTurn} ${weekString} (week of ${formatDate(
+            theirTurnDate
+          )}).`
+        }
       }
 
       const messageBody =
-        `Trash Duty:\n\n` +
-        `1. This week (${formatDate(thisWeekDate)}): ${personOnDuty.name}\n` +
-        `2. Next week (${formatDate(nextWeekDate)}): ${
-          nextPersonInRotation.name
-        }\n\n` +
-        `${personalStatus}`
+        `${personalStatus}\n\n` +
+        `🎯 This Week: ${personOnDuty.name}\n` +
+        `➡️ Next Week: ${nextPersonUp.name}\n\n` +
+        `🗓️ Full Schedule:\n` +
+        `https://trash.kwon.ai\n\n` +
+        `❕ Missed a duty? Report it on the site.`
 
-      // 6. Send the message
       await sendSms(env, person.phone, messageBody)
     }
   },
@@ -87,6 +110,7 @@ export default {
   /**
    * This function acts as our API. It listens for requests from the frontend dashboard.
    */
+  // FINAL WEBSITE LOGIC: Replace your existing 'fetch' function with this one.
   async fetch(request, env, ctx) {
     const url = new URL(request.url)
     const corsHeaders = {
@@ -95,12 +119,10 @@ export default {
       'Access-Control-Allow-Headers': 'Content-Type',
     }
 
-    // Respond to pre-flight CORS requests
     if (request.method === 'OPTIONS') {
       return new Response(null, { headers: corsHeaders })
     }
 
-    // Endpoint to get schedule data for the dashboard
     if (url.pathname === '/schedule') {
       const team = await env.ROTATION_DB.get('TEAM_MEMBERS', 'json')
       const currentIndex = parseInt(
@@ -111,24 +133,58 @@ export default {
       const teamSize = team.length
 
       let onDutyName
+      let lastWeekName
       let penaltyInfo = {}
+      let upcoming = []
 
-      if (penaltyBox.weeksRemaining > 0) {
-        onDutyName = team[penaltyBox.offenderIndex].name
-        penaltyInfo = { weeksRemaining: penaltyBox.weeksRemaining }
+      const isPenaltyActive =
+        penaltyBox.weeksRemaining && penaltyBox.weeksRemaining > 0
+
+      if (isPenaltyActive) {
+        // --- PENALTY-AWARE LOGIC ---
+        const offenderName = team[penaltyBox.offenderIndex].name
+        onDutyName = offenderName
+
+        // Add the grammar fix for the penalty banner
+        const weekString = penaltyBox.weeksRemaining === 1 ? 'week' : 'weeks'
+        penaltyInfo = {
+          weeksRemaining: penaltyBox.weeksRemaining,
+          weekString: weekString,
+        }
+
+        // Determine "Last Week" more intelligently
+        if (penaltyBox.weeksRemaining < 3) {
+          // If it's week 2 or 3 of the penalty, the offender was also on duty last week.
+          lastWeekName = offenderName
+        } else {
+          // If it's the first week of a penalty, "Last Week" was the person before the rotation paused.
+          lastWeekName = team[(currentIndex - 1 + teamSize) % teamSize].name
+        }
+
+        // ** THE CORE FIX: Rebuild the "Upcoming" list correctly **
+        // Add the offender for their remaining penalty weeks.
+        for (let i = 1; i < penaltyBox.weeksRemaining; i++) {
+          upcoming.push(offenderName)
+        }
+
+        // Now, add the next people from the normal rotation until the list is filled.
+        let normalRotationOffset = 0
+        while (upcoming.length < 3) {
+          const nextPersonIndex =
+            (currentIndex + normalRotationOffset) % teamSize
+          upcoming.push(team[nextPersonIndex].name)
+          normalRotationOffset++
+        }
       } else {
+        // --- NORMAL LOGIC ---
         onDutyName = team[currentIndex].name
+        lastWeekName = team[(currentIndex - 1 + teamSize) % teamSize].name
+        upcoming = [
+          team[(currentIndex + 1) % teamSize].name,
+          team[(currentIndex + 2) % teamSize].name,
+          team[(currentIndex + 3) % teamSize].name,
+        ]
       }
-
-      const lastWeekIndex = (currentIndex - 1 + teamSize) % teamSize
-      const lastWeekName = team[lastWeekIndex].name
-
-      // Create a list of the next 3 people in the normal rotation
-      const upcoming = [
-        team[(currentIndex + 1) % teamSize].name,
-        team[(currentIndex + 2) % teamSize].name,
-        team[(currentIndex + 3) % teamSize].name,
-      ]
 
       const responseData = {
         onDuty: onDutyName,
@@ -142,21 +198,15 @@ export default {
       })
     }
 
-    // Endpoint to report a missed duty
     if (url.pathname === '/report' && request.method === 'POST') {
       const teamSize = (await env.ROTATION_DB.get('TEAM_MEMBERS', 'json'))
         .length
       const currentIndex = parseInt(
         (await env.ROTATION_DB.get('CURRENT_INDEX')) || '0'
       )
-
-      // The offender is the person from *last week* relative to the current index
       const offenderIndex = (currentIndex - 1 + teamSize) % teamSize
 
-      const penalty = {
-        offenderIndex: offenderIndex,
-        weeksRemaining: 3,
-      }
+      const penalty = { offenderIndex: offenderIndex, weeksRemaining: 3 }
       await env.ROTATION_DB.put('PENALTY_BOX', JSON.stringify(penalty))
 
       const responseData = {
@@ -172,14 +222,8 @@ export default {
   },
 }
 
-// --- HELPER FUNCTIONS ---
+// --- HELPER FUNCTIONS --- (No changes below this line)
 
-/**
- * Sends an SMS using the Twilio API.
- * @param {object} env - The environment object containing secrets.
- * @param {string} to - The recipient's phone number in E.164 format.
- * @param {string} body - The text message content.
- */
 async function sendSms(env, to, body) {
   const url = `https://api.twilio.com/2010-04-01/Accounts/${env.TWILIO_ACCOUNT_SID}/Messages.json`
   const data = new URLSearchParams({
@@ -187,7 +231,6 @@ async function sendSms(env, to, body) {
     From: env.TWILIO_PHONE_NUMBER,
     Body: body,
   })
-
   try {
     const response = await fetch(url, {
       method: 'POST',
@@ -208,11 +251,6 @@ async function sendSms(env, to, body) {
   }
 }
 
-/**
- * Formats a Date object into a readable string like "Oct 1".
- * @param {Date} date - The date to format.
- * @returns {string} - The formatted date string.
- */
 function formatDate(date) {
   return date.toLocaleDateString('en-US', {
     month: 'short',
