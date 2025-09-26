@@ -110,11 +110,10 @@ export default {
   /**
    * This function acts as our API. It listens for requests from the frontend dashboard.
    */
-  // FINAL WEBSITE LOGIC: Replace your existing 'fetch' function with this one.
   async fetch(request, env, ctx) {
     const url = new URL(request.url)
     const corsHeaders = {
-      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Origin': '*', // This is the crucial permission header
       'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
       'Access-Control-Allow-Headers': 'Content-Type',
     }
@@ -135,64 +134,36 @@ export default {
       let onDutyName
       let lastWeekName
       let penaltyInfo = {}
-      let upcoming = []
-
       const isPenaltyActive =
         penaltyBox.weeksRemaining && penaltyBox.weeksRemaining > 0
 
       if (isPenaltyActive) {
-        // --- PENALTY-AWARE LOGIC ---
-        const offenderName = team[penaltyBox.offenderIndex].name
-        onDutyName = offenderName
-
-        // Add the grammar fix for the penalty banner
+        onDutyName = team[penaltyBox.offenderIndex].name
         const weekString = penaltyBox.weeksRemaining === 1 ? 'week' : 'weeks'
         penaltyInfo = {
           weeksRemaining: penaltyBox.weeksRemaining,
           weekString: weekString,
         }
-
-        // Determine "Last Week" more intelligently
         if (penaltyBox.weeksRemaining < 3) {
-          // If it's week 2 or 3 of the penalty, the offender was also on duty last week.
-          lastWeekName = offenderName
+          lastWeekName = onDutyName
         } else {
-          // If it's the first week of a penalty, "Last Week" was the person before the rotation paused.
           lastWeekName = team[(currentIndex - 1 + teamSize) % teamSize].name
         }
-
-        // ** THE CORE FIX: Rebuild the "Upcoming" list correctly **
-        // Add the offender for their remaining penalty weeks.
-        for (let i = 1; i < penaltyBox.weeksRemaining; i++) {
-          upcoming.push(offenderName)
-        }
-
-        // Now, add the next people from the normal rotation until the list is filled.
-        let normalRotationOffset = 0
-        while (upcoming.length < 3) {
-          const nextPersonIndex =
-            (currentIndex + normalRotationOffset) % teamSize
-          upcoming.push(team[nextPersonIndex].name)
-          normalRotationOffset++
-        }
       } else {
-        // --- NORMAL LOGIC ---
         onDutyName = team[currentIndex].name
         lastWeekName = team[(currentIndex - 1 + teamSize) % teamSize].name
-        upcoming = [
-          team[(currentIndex + 1) % teamSize].name,
-          team[(currentIndex + 2) % teamSize].name,
-          team[(currentIndex + 3) % teamSize].name,
-        ]
       }
 
       const responseData = {
         onDuty: onDutyName,
         lastWeek: lastWeekName,
-        upcoming: upcoming,
+        team: team,
+        currentIndex: currentIndex,
+        penaltyBox: penaltyBox,
         penaltyInfo: penaltyInfo,
       }
 
+      // ** THE FIX IS HERE: We are adding the `headers` object back to the response **
       return new Response(JSON.stringify(responseData), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       })
@@ -213,6 +184,8 @@ export default {
         message:
           'Penalty has been recorded. The schedule will update on the next rotation.',
       }
+
+      // ** THE FIX IS ALSO HERE: Adding headers to the report response **
       return new Response(JSON.stringify(responseData), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       })

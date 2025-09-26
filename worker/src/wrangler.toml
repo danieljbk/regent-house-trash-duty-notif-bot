@@ -1,3 +1,7 @@
 name = "regent-house-trash-duty-notif-worker"
 compatibility_date = "2025-09-26"
 main = "src/index.js" # Or the correct path to your entry script
+
+# wrangler.toml (wrangler v3.88.0^)
+[observability.logs]
+enabled = true
