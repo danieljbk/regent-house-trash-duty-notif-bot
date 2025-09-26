@@ -42,10 +42,7 @@ export default {
       ) {
         penaltyOffender = team[offenderIndex]
         penaltyWeeks = Math.max(0, weeksRemaining)
-        if (penaltyWeeks === 0) {
-          // Stale penalty entry from a completed cycle—clean it up.
-          await rotationDb.delete('PENALTY_BOX')
-        } else {
+        if (penaltyWeeks > 0) {
           penaltyBox = { offenderIndex, weeksRemaining: penaltyWeeks }
         }
       } else {
@@ -72,6 +69,9 @@ export default {
         })
       )
     } else {
+      if (penaltyBox && penaltyWeeks === 0) {
+        await rotationDb.delete('PENALTY_BOX')
+      }
       currentIndex = (currentIndex + 1) % teamSize
       await rotationDb.put('CURRENT_INDEX', currentIndex.toString())
     }
@@ -85,7 +85,7 @@ export default {
       if (activePenalty.remainingAfterThisWeek >= 1) {
         nextPersonUp = personOnDuty
       } else {
-        nextPersonUp = team[currentIndex]
+        nextPersonUp = team[(currentIndex + 1) % teamSize]
       }
     } else {
       personOnDuty = team[currentIndex]
@@ -110,7 +110,7 @@ export default {
           const normalWeeksUntilTurn =
             (personIndex - currentIndex + teamSize) % teamSize
           const weeksUntilTurn =
-            normalWeeksUntilTurn + activePenalty.remainingAfterThisWeek + 1
+            normalWeeksUntilTurn + activePenalty.remainingAfterThisWeek
           const theirTurnDate = new Date()
           theirTurnDate.setDate(thisWeekDate.getDate() + weeksUntilTurn * 7)
           const weekString = weeksUntilTurn === 1 ? 'week' : 'weeks'
@@ -216,14 +216,14 @@ export default {
 
         if (offenderValid) {
           const offender = team[offenderIndex]
-          const penaltyActive =
-            offender && (offenderIndex === currentIndex || futureWeeks > 0)
-          const penaltyPending = offender && !penaltyActive && futureWeeks > 0
+          const penaltyActive = offender && futureWeeks > 0
+          const penaltyPending =
+            offender && !penaltyActive && offenderIndex === currentIndex
 
           if (penaltyActive || penaltyPending) {
             const displayWeeksRemaining = penaltyActive
-              ? futureWeeks + 1
-              : futureWeeks
+              ? futureWeeks
+              : 1
             const weekString =
               displayWeeksRemaining === 1 ? 'week' : 'weeks'
             let bannerText = ''
