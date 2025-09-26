@@ -1,5 +1,6 @@
 // IMPORTANT: Replace this with your actual Cloudflare Worker URL
-const WORKER_URL = 'https://your-worker-name.your-subdomain.workers.dev'
+const WORKER_URL =
+  'https://regent-house-trash-duty-notif-worker.djbkwon.workers.dev'
 
 // Get references to all the HTML elements we need to update
 const onDutyEl = document.getElementById('on-duty')
