@@ -1,3 +1,5 @@
+const PENALTY_LENGTH = 3
+
 export default {
   /**
    * SCHEDULED HANDLER
@@ -19,16 +21,56 @@ export default {
       return
     }
     let currentIndex = parseInt((await rotationDb.get('CURRENT_INDEX')) || '0')
-    const penaltyBox = (await rotationDb.get('PENALTY_BOX', 'json')) || {}
+    const rawPenaltyBox = await rotationDb.get('PENALTY_BOX', 'json')
     const teamSize = team.length
 
-    // 2. IMPORTANT: Update the state for the NEW week *first*
-    const isPenaltyActive =
-      penaltyBox.weeksRemaining && penaltyBox.weeksRemaining > 0
+    // 2. Validate the stored penalty state before using it.
+    let penaltyBox = null
+    let penaltyOffender
+    let penaltyWeeks = 0
+    if (rawPenaltyBox) {
+      const offenderIndex = Number.isInteger(rawPenaltyBox.offenderIndex)
+        ? rawPenaltyBox.offenderIndex
+        : undefined
+      const weeksRemaining = Number.isInteger(rawPenaltyBox.weeksRemaining)
+        ? rawPenaltyBox.weeksRemaining
+        : 0
+      if (
+        offenderIndex !== undefined &&
+        offenderIndex >= 0 &&
+        offenderIndex < teamSize
+      ) {
+        penaltyOffender = team[offenderIndex]
+        penaltyWeeks = Math.max(0, weeksRemaining)
+        if (penaltyWeeks === 0) {
+          // Stale penalty entry from a completed cycle—clean it up.
+          await rotationDb.delete('PENALTY_BOX')
+        } else {
+          penaltyBox = { offenderIndex, weeksRemaining: penaltyWeeks }
+        }
+      } else {
+        // Invalid penalty (probably team edited); clean it up so the worker can recover.
+        await rotationDb.delete('PENALTY_BOX')
+      }
+    }
 
-    if (isPenaltyActive) {
-      penaltyBox.weeksRemaining--
-      await rotationDb.put('PENALTY_BOX', JSON.stringify(penaltyBox))
+    // 3. IMPORTANT: Update the state for the NEW week *first*
+    let activePenalty = null
+    if (penaltyBox && penaltyWeeks > 0) {
+      const remainingAfterThisWeek = Math.max(0, penaltyWeeks - 1)
+      activePenalty = {
+        offenderIndex: penaltyBox.offenderIndex,
+        offender: penaltyOffender,
+        remainingAfterThisWeek,
+      }
+
+      await rotationDb.put(
+        'PENALTY_BOX',
+        JSON.stringify({
+          offenderIndex: penaltyBox.offenderIndex,
+          weeksRemaining: remainingAfterThisWeek,
+        })
+      )
     } else {
       currentIndex = (currentIndex + 1) % teamSize
       await rotationDb.put('CURRENT_INDEX', currentIndex.toString())
@@ -38,9 +80,9 @@ export default {
     let personOnDuty
     let nextPersonUp
 
-    if (isPenaltyActive) {
-      personOnDuty = team[penaltyBox.offenderIndex]
-      if (penaltyBox.weeksRemaining >= 1) {
+    if (activePenalty && activePenalty.offender) {
+      personOnDuty = activePenalty.offender
+      if (activePenalty.remainingAfterThisWeek >= 1) {
         nextPersonUp = personOnDuty
       } else {
         nextPersonUp = team[currentIndex]
@@ -51,22 +93,24 @@ export default {
     }
 
     // 4. Loop through and send personalized, grammar-aware SMS messages
+    const sendQueue = []
+
     for (const [personIndex, person] of team.entries()) {
       let personalStatus = ''
       const thisWeekDate = new Date()
 
-      if (isPenaltyActive) {
-        if (personIndex === penaltyBox.offenderIndex) {
+      if (activePenalty && activePenalty.offender) {
+        if (personIndex === activePenalty.offenderIndex) {
           personalStatus = `⚠️ ${
             person.name
           }, you are on Trash Duty.\nThis is week ${
-            3 - penaltyBox.weeksRemaining
-          } of 3 for your penalty.`
+            PENALTY_LENGTH - activePenalty.remainingAfterThisWeek
+          } of ${PENALTY_LENGTH} for your penalty.`
         } else {
           const normalWeeksUntilTurn =
             (personIndex - currentIndex + teamSize) % teamSize
           const weeksUntilTurn =
-            normalWeeksUntilTurn + penaltyBox.weeksRemaining + 1
+            normalWeeksUntilTurn + activePenalty.remainingAfterThisWeek + 1
           const theirTurnDate = new Date()
           theirTurnDate.setDate(thisWeekDate.getDate() + weeksUntilTurn * 7)
           const weekString = weeksUntilTurn === 1 ? 'week' : 'weeks'
@@ -105,7 +149,20 @@ export default {
         `https://trashbot.kwon.ai\n\n` +
         `❕ Missed a duty? Report it on the site.`
 
-      await sendSms(env, person.phone, messageBody)
+      sendQueue.push(sendSms(env, person.phone, messageBody))
+    }
+
+    if (sendQueue.length > 0) {
+      const results = await Promise.allSettled(sendQueue)
+      const failures = results.filter((result) => {
+        if (result.status === 'rejected') return true
+        return result.value && result.value.ok === false
+      })
+      if (failures.length > 0) {
+        console.error(
+          `Scheduled run completed with ${failures.length} Twilio delivery issue(s).`
+        )
+      }
     }
   },
 
@@ -149,54 +206,51 @@ export default {
         const offenderIndex = Number.isInteger(rawPenaltyBox.offenderIndex)
           ? rawPenaltyBox.offenderIndex
           : undefined
-        const weeksRemaining = Number.isInteger(rawPenaltyBox.weeksRemaining)
-          ? rawPenaltyBox.weeksRemaining
+        const offenderValid =
+          offenderIndex !== undefined &&
+          offenderIndex >= 0 &&
+          offenderIndex < teamSize
+        const futureWeeks = Number.isInteger(rawPenaltyBox.weeksRemaining)
+          ? Math.max(0, rawPenaltyBox.weeksRemaining)
           : 0
-        const offender =
-          offenderIndex !== undefined ? team[offenderIndex] : undefined
-        const PENALTY_LENGTH = 3
-        const penaltyRecorded = offender && weeksRemaining > 0
-        // When CURRENT_INDEX already matches the offender we treat the penalty as “active”
-        // even if weeksRemaining is still the initial value (meaning we just reassigned them).
-        const penaltyIsCurrent =
-          penaltyRecorded && offenderIndex === currentIndex
-        const penaltyActive =
-          penaltyRecorded &&
-          (weeksRemaining < PENALTY_LENGTH || penaltyIsCurrent)
-        const penaltyPending = penaltyRecorded && !penaltyActive
 
-        if (penaltyPending || penaltyActive) {
-          const displayWeeksRemaining = penaltyActive
-            ? weeksRemaining + 1
-            : weeksRemaining
-          const weekString = 
-            displayWeeksRemaining === 1 ? 'week' : 'weeks'
-          let bannerText = ''
+        if (offenderValid) {
+          const offender = team[offenderIndex]
+          const penaltyActive =
+            offender && (offenderIndex === currentIndex || futureWeeks > 0)
+          const penaltyPending = offender && !penaltyActive && futureWeeks > 0
 
-          if (penaltyActive) {
-            bannerText = `PENALTY ACTIVE: ${offender.name} has ${displayWeeksRemaining} ${weekString} remaining. The normal rotation is paused.`
-          } else {
-            bannerText = `Penalty recorded: ${offender.name} owes ${displayWeeksRemaining} ${weekString}. The rotation will pause after this week.`
+          if (penaltyActive || penaltyPending) {
+            const displayWeeksRemaining = penaltyActive
+              ? futureWeeks + 1
+              : futureWeeks
+            const weekString =
+              displayWeeksRemaining === 1 ? 'week' : 'weeks'
+            let bannerText = ''
+
+            if (penaltyActive) {
+              bannerText = `PENALTY ACTIVE: ${offender.name} has ${displayWeeksRemaining} ${weekString} remaining. The normal rotation is paused.`
+            } else {
+              bannerText = `Penalty recorded: ${offender.name} owes ${displayWeeksRemaining} ${weekString}. The rotation will pause after this week.`
+            }
+
+            penaltyInfo = {
+              offenderName: offender.name,
+              weeksRemaining: displayWeeksRemaining,
+              rawWeeksRemaining: futureWeeks,
+              weekString,
+              isActive: penaltyActive,
+              startsNextRotation: penaltyPending,
+              bannerText,
+            }
+
+            if (penaltyPending) {
+              lastWeekName = offender.name
+            } else if (penaltyActive) {
+              onDutyName = offender.name
+              lastWeekName = offender.name
+            }
           }
-
-          penaltyInfo = {
-            offenderName: offender.name,
-            weeksRemaining: displayWeeksRemaining,
-            rawWeeksRemaining: weeksRemaining,
-            weekString,
-            isActive: penaltyActive,
-            startsNextRotation: penaltyPending,
-            bannerText,
-          }
-        }
-
-        if (penaltyPending && offender) {
-          // Pending means we just recorded the penalty; last week is still the offender.
-          lastWeekName = offender.name
-        } else if (penaltyActive && offender) {
-          // Active means offender owns the present slot and we want both cards to reflect it.
-          onDutyName = offender.name
-          lastWeekName = offender.name
         }
 
         const responseData = {
@@ -260,34 +314,70 @@ export default {
       // Determine if a penalty is already active so we can decide who actually missed.
       const existingPenalty =
         (await rotationDb.get('PENALTY_BOX', 'json')) || {}
+      const existingFutureWeeks = Number.isInteger(
+        existingPenalty.weeksRemaining
+      )
+        ? Math.max(0, existingPenalty.weeksRemaining)
+        : 0
       const hasActivePenalty =
         Number.isInteger(existingPenalty.offenderIndex) &&
-        Number.isInteger(existingPenalty.weeksRemaining) &&
-        existingPenalty.weeksRemaining > 0
+        existingFutureWeeks > 0
       // If a penalty is active we penalize the same offender again; otherwise fall back to
       // “last week’s” person based on rotation order.
       const offenderIndex = hasActivePenalty
         ? existingPenalty.offenderIndex
         : (currentIndex - 1 + teamSize) % teamSize
 
-      const penalty = { offenderIndex: offenderIndex, weeksRemaining: 3 }
+      if (
+        hasActivePenalty &&
+        existingPenalty.offenderIndex === offenderIndex &&
+        existingFutureWeeks >= PENALTY_LENGTH - 1
+      ) {
+        const offender = teamData[offenderIndex]
+        console.info(
+          `Penalty report ignored: ${offender.name} already has ${existingFutureWeeks} future weeks queued.`
+        )
+        const responseData = {
+          message: `${offender.name} already has a penalty in progress. No changes recorded.`,
+        }
+        return new Response(JSON.stringify(responseData), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        })
+      }
+
+      const penalty = {
+        offenderIndex: offenderIndex,
+        weeksRemaining: Math.max(0, PENALTY_LENGTH - 1),
+      }
       await rotationDb.put('PENALTY_BOX', JSON.stringify(penalty))
       await rotationDb.put('CURRENT_INDEX', offenderIndex.toString())
 
       const offender = teamData[offenderIndex]
       if (offender && offender.name) {
+        console.info(
+          `Penalty activated for ${offender.name}. Future penalty weeks queued: ${penalty.weeksRemaining}`
+        )
         const penaltyMessage =
           `⚠️ Penalty filed: ${offender.name} missed trash duty.` +
-          `\n${offender.name} is now assigned for the next 3 weeks.` +
+          `\n${offender.name} is now assigned for the next ${PENALTY_LENGTH} weeks.` +
           `\n\nCheck the schedule: https://trashbot.kwon.ai`
 
         const recipients = teamData.filter(
           (member) => member && typeof member.phone === 'string' && member.phone
         )
 
-        await Promise.allSettled(
+        const alertResults = await Promise.allSettled(
           recipients.map((member) => sendSms(env, member.phone, penaltyMessage))
         )
+        const alertFailures = alertResults.filter((result) => {
+          if (result.status === 'rejected') return true
+          return result.value && result.value.ok === false
+        })
+        if (alertFailures.length > 0) {
+          console.error(
+            `Penalty alert failed for ${alertFailures.length} teammate(s).`
+          )
+        }
       }
 
       const responseData = {
@@ -325,11 +415,14 @@ async function sendSms(env, to, body) {
     if (!response.ok) {
       const errorData = await response.json()
       console.error(`Twilio Error for ${to}:`, errorData.message)
+      return { ok: false, to, error: errorData.message }
     } else {
       console.log(`Message sent successfully to ${to}`)
+      return { ok: true, to }
     }
   } catch (error) {
     console.error(`Failed to send message to ${to}:`, error)
+    return { ok: false, to, error: error?.message || 'unknown error' }
   }
 }
 
