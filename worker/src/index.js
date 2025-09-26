@@ -154,10 +154,12 @@ export default {
           offenderIndex !== undefined ? team[offenderIndex] : undefined
         const PENALTY_LENGTH = 3
         const penaltyRecorded = offender && weeksRemaining > 0
-        const penaltyPending =
-          penaltyRecorded && weeksRemaining === PENALTY_LENGTH
+        const penaltyIsCurrent =
+          penaltyRecorded && offenderIndex === currentIndex
         const penaltyActive =
-          penaltyRecorded && weeksRemaining < PENALTY_LENGTH
+          penaltyRecorded &&
+          (weeksRemaining < PENALTY_LENGTH || penaltyIsCurrent)
+        const penaltyPending = penaltyRecorded && !penaltyActive
 
         if (penaltyPending || penaltyActive) {
           const weekString = weeksRemaining === 1 ? 'week' : 'weeks'
@@ -179,9 +181,9 @@ export default {
           }
         }
 
-        if (penaltyPending) {
+        if (penaltyPending && offender) {
           lastWeekName = offender.name
-        } else if (penaltyActive) {
+        } else if (penaltyActive && offender) {
           onDutyName = offender.name
           lastWeekName = offender.name
         }
@@ -248,10 +250,11 @@ export default {
 
       const penalty = { offenderIndex: offenderIndex, weeksRemaining: 3 }
       await rotationDb.put('PENALTY_BOX', JSON.stringify(penalty))
+      await rotationDb.put('CURRENT_INDEX', offenderIndex.toString())
 
       const responseData = {
         message:
-          'Penalty has been recorded. The schedule will update on the next rotation.',
+          'Penalty has been recorded. The offender is now on duty for the next three weeks.',
       }
 
       return new Response(JSON.stringify(responseData), {
