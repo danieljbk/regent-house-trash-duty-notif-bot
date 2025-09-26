@@ -9,16 +9,24 @@ export default {
    * Runs on a cron schedule to send notifications.
    */
   async scheduled(event, env, ctx) {
+    let rotationDb
+    try {
+      rotationDb = getRotationDb(env)
+    } catch (error) {
+      console.error(error.message)
+      return
+    }
+
     // 1. Get current state from KV
-    const team = await env.ROTATION_DB.get('TEAM_MEMBERS', 'json')
+    const team = await rotationDb.get('TEAM_MEMBERS', 'json')
     if (!team || team.length === 0) {
       console.error('FATAL: Team data is missing or empty.')
       return
     }
     let currentIndex = parseInt(
-      (await env.ROTATION_DB.get('CURRENT_INDEX')) || '0'
+      (await rotationDb.get('CURRENT_INDEX')) || '0'
     )
-    const penaltyBox = (await env.ROTATION_DB.get('PENALTY_BOX', 'json')) || {}
+    const penaltyBox = (await rotationDb.get('PENALTY_BOX', 'json')) || {}
     const teamSize = team.length
 
     // 2. IMPORTANT: Update the state for the NEW week *first*
@@ -27,10 +35,10 @@ export default {
 
     if (isPenaltyActive) {
       penaltyBox.weeksRemaining--
-      await env.ROTATION_DB.put('PENALTY_BOX', JSON.stringify(penaltyBox))
+      await rotationDb.put('PENALTY_BOX', JSON.stringify(penaltyBox))
     } else {
       currentIndex = (currentIndex + 1) % teamSize
-      await env.ROTATION_DB.put('CURRENT_INDEX', currentIndex.toString())
+      await rotationDb.put('CURRENT_INDEX', currentIndex.toString())
     }
 
     // 3. Determine who is on duty for THIS week and NEXT week based on the new state
@@ -125,61 +133,98 @@ export default {
     }
 
     if (url.pathname === '/schedule') {
-      const team = await env.ROTATION_DB.get('TEAM_MEMBERS', 'json')
-      const currentIndex = parseInt(
-        (await env.ROTATION_DB.get('CURRENT_INDEX')) || '0'
-      )
-      const penaltyBox =
-        (await env.ROTATION_DB.get('PENALTY_BOX', 'json')) || {}
-      const teamSize = team.length
-
-      let onDutyName,
-        lastWeekName,
-        penaltyInfo = {}
-      const isPenaltyActive =
-        penaltyBox.weeksRemaining && penaltyBox.weeksRemaining > 0
-
-      if (isPenaltyActive) {
-        onDutyName = team[penaltyBox.offenderIndex].name
-        const weekString = penaltyBox.weeksRemaining === 1 ? 'week' : 'weeks'
-        penaltyInfo = {
-          weeksRemaining: penaltyBox.weeksRemaining,
-          weekString: weekString,
+      try {
+        const rotationDb = getRotationDb(env)
+        const team = await rotationDb.get('TEAM_MEMBERS', 'json')
+        if (!Array.isArray(team) || team.length === 0) {
+          throw new Error('Team data is missing or empty.')
         }
-        if (penaltyBox.weeksRemaining < 3) {
-          lastWeekName = onDutyName
+        const currentIndex = parseInt(
+          (await rotationDb.get('CURRENT_INDEX')) || '0'
+        )
+        const penaltyBox =
+          (await rotationDb.get('PENALTY_BOX', 'json')) || {}
+        const teamSize = team.length
+
+        let onDutyName,
+          lastWeekName,
+          penaltyInfo = {}
+        const isPenaltyActive =
+          penaltyBox.weeksRemaining && penaltyBox.weeksRemaining > 0
+
+        if (isPenaltyActive) {
+          onDutyName = team[penaltyBox.offenderIndex].name
+          const weekString = penaltyBox.weeksRemaining === 1 ? 'week' : 'weeks'
+          penaltyInfo = {
+            weeksRemaining: penaltyBox.weeksRemaining,
+            weekString: weekString,
+          }
+          if (penaltyBox.weeksRemaining < 3) {
+            lastWeekName = onDutyName
+          } else {
+            lastWeekName = team[(currentIndex - 1 + teamSize) % teamSize].name
+          }
         } else {
+          onDutyName = team[currentIndex].name
           lastWeekName = team[(currentIndex - 1 + teamSize) % teamSize].name
         }
-      } else {
-        onDutyName = team[currentIndex].name
-        lastWeekName = team[(currentIndex - 1 + teamSize) % teamSize].name
-      }
 
-      const responseData = {
-        onDuty: onDutyName,
-        lastWeek: lastWeekName,
-        team: team,
-        currentIndex: currentIndex,
-        penaltyBox: penaltyBox,
-        penaltyInfo: penaltyInfo,
-      }
+        const responseData = {
+          onDuty: onDutyName,
+          lastWeek: lastWeekName,
+          team: team,
+          currentIndex: currentIndex,
+          penaltyBox: penaltyBox,
+          penaltyInfo: penaltyInfo,
+        }
 
-      return new Response(JSON.stringify(responseData), {
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      })
+        return new Response(JSON.stringify(responseData), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        })
+      } catch (error) {
+        console.error('Failed to load schedule:', error.message)
+        return new Response(
+          JSON.stringify({ error: 'Server configuration error. Please try again later.' }),
+          {
+            status: 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          }
+        )
+      }
     }
 
     if (url.pathname === '/report' && request.method === 'POST') {
-      const teamSize = (await env.ROTATION_DB.get('TEAM_MEMBERS', 'json'))
-        .length
+      let rotationDb
+      try {
+        rotationDb = getRotationDb(env)
+      } catch (error) {
+        console.error(error.message)
+        return new Response(
+          JSON.stringify({ error: 'Server configuration error. Please try again later.' }),
+          {
+            status: 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          }
+        )
+      }
+      const teamData = await rotationDb.get('TEAM_MEMBERS', 'json')
+      if (!Array.isArray(teamData) || teamData.length === 0) {
+        return new Response(
+          JSON.stringify({ error: 'Team data is missing. Penalty cannot be recorded.' }),
+          {
+            status: 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          }
+        )
+      }
+      const teamSize = teamData.length
       const currentIndex = parseInt(
-        (await env.ROTATION_DB.get('CURRENT_INDEX')) || '0'
+        (await rotationDb.get('CURRENT_INDEX')) || '0'
       )
       const offenderIndex = (currentIndex - 1 + teamSize) % teamSize
 
       const penalty = { offenderIndex: offenderIndex, weeksRemaining: 3 }
-      await env.ROTATION_DB.put('PENALTY_BOX', JSON.stringify(penalty))
+      await rotationDb.put('PENALTY_BOX', JSON.stringify(penalty))
 
       const responseData = {
         message:
@@ -222,6 +267,14 @@ async function sendSms(env, to, body) {
   } catch (error) {
     console.error(`Failed to send message to ${to}:`, error)
   }
+}
+
+function getRotationDb(env) {
+  const kv = env?.ROTATION_DB
+  if (!kv || typeof kv.get !== 'function') {
+    throw new Error('ROTATION_DB binding is not configured.')
+  }
+  return kv
 }
 
 function formatDate(date) {

@@ -13,6 +13,8 @@ const reportButton = document.getElementById('report-button')
 const reportResponseEl = document.getElementById('report-response')
 const lastWeekEl = document.getElementById('last-week')
 
+const MAX_UPCOMING_ROWS = 3
+
 // --- NEW, STABLE DATE HELPER FUNCTIONS ---
 
 /**
@@ -29,6 +31,45 @@ const getStartOfWeek = (d) => {
 
 const formatDate = (date) => {
   return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+}
+
+const deriveUpcoming = (data) => {
+  if (Array.isArray(data.upcoming) && data.upcoming.length > 0) {
+    return data.upcoming
+  }
+
+  const team = Array.isArray(data.team) ? data.team : []
+  if (team.length === 0) return []
+
+  const currentIndex = Number.parseInt(data.currentIndex, 10)
+  if (Number.isNaN(currentIndex)) return []
+
+  const penaltyBox = data.penaltyBox || {}
+  let penaltyWeeks = Number.parseInt(penaltyBox.weeksRemaining, 10)
+  if (Number.isNaN(penaltyWeeks) || penaltyWeeks < 0) penaltyWeeks = 0
+  const offenderIndex = Number.isInteger(penaltyBox.offenderIndex)
+    ? penaltyBox.offenderIndex
+    : undefined
+
+  const names = []
+  let pointer = currentIndex
+
+  for (let step = 0; step < MAX_UPCOMING_ROWS; step++) {
+    if (penaltyWeeks > 0 && offenderIndex !== undefined) {
+      const offender = team[offenderIndex]
+      if (!offender) break
+      names.push(offender.name)
+      penaltyWeeks--
+      continue
+    }
+
+    pointer = (pointer + 1) % team.length
+    const person = team[pointer]
+    if (!person) break
+    names.push(person.name)
+  }
+
+  return names
 }
 
 /**
@@ -57,8 +98,19 @@ async function fetchSchedule() {
     lastWeekReportEl.textContent = data.lastWeek
 
     // --- 4. Populate Upcoming Schedule Table with Correct Dates ---
-    upcomingListEl.innerHTML = '' // Clear previous entries
-    data.upcoming.forEach((person, index) => {
+    const upcomingNames = deriveUpcoming(data)
+    upcomingListEl.innerHTML = ''
+
+    if (upcomingNames.length === 0) {
+      const row = document.createElement('tr')
+      const cell = document.createElement('td')
+      cell.colSpan = 2
+      cell.textContent = 'No upcoming rotation data available.'
+      row.appendChild(cell)
+      upcomingListEl.appendChild(row)
+    }
+
+    upcomingNames.forEach((name, index) => {
       // Calculate each upcoming week's Monday based on the stable anchor
       const upcomingWeekStart = new Date(startOfWeek)
       upcomingWeekStart.setDate(startOfWeek.getDate() + (index + 1) * 7)
@@ -67,7 +119,7 @@ async function fetchSchedule() {
       const nameCell = document.createElement('td')
       const dateCell = document.createElement('td')
 
-      nameCell.textContent = person
+      nameCell.textContent = name
       dateCell.textContent = formatDate(upcomingWeekStart)
 
       row.appendChild(nameCell)

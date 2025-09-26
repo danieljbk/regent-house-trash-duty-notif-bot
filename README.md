@@ -1,510 +1,653 @@
-# Automated Team Rotation Notifier with Penalty System
+# Trash Duty Notification System
 
-## 1. Project Overview
+Build once, forget forever. This repository contains a fully automated rota tracker that uses Cloudflare Workers, Cloudflare KV, and Twilio SMS to keep a house (or any team) on top of trash duty. A static dashboard on Cloudflare Pages shows the schedule and lets teammates report missed weeks, automatically enforcing a three-week penalty.
 
-This document describes a fully automated, serverless system designed to manage a recurring, rotating duty for a team of individuals. The system addresses the challenge of manually tracking whose turn it is for a specific task (e.g., taking out the trash, on-call duty) and introduces a mechanism for accountability.
+## TL;DR
 
-The system is built entirely on the Cloudflare serverless ecosystem and integrates with the Twilio API for SMS notifications.
+- **Serverless everything:** Cron-triggered Cloudflare Worker handles scheduling, SMS, and API responses; Cloudflare Pages serves the dashboard.
+- **Battle-tested rotation logic:** Penalty weeks pause the normal rotation and keep the offender in place until their sentence is served.
+- **KV as the source of truth:** Simple JSON keys drive both the worker and the UI. No database server required.
+- **Friendly guard rails:** Runtime checks surface misconfigurations (missing KV binding, empty team, etc.) with structured JSON errors instead of crashes.
 
-### Core Features:
+## Repository Layout
 
-*   **Automated Weekly Notifications:** On a user-defined schedule, the system sends personalized SMS messages to every member of the team.
-*   **Personalized Status Updates:** Each message is unique to the recipient, informing them of the current person on duty, the person for the following week, and the specific date of their own upcoming turn.
-*   **Web-Based Dashboard:** A publicly accessible static webpage that displays the current rotation schedule, including who is on duty, who was on duty last, and who is coming up next.
-*   **Accountability & Penalty System:** The dashboard includes a feature for team members to report a missed duty. Reporting a failure automatically places the offending member into a "Penalty Box," assigning them the duty for the next 3 consecutive weeks and pausing the normal rotation.
-*   **Serverless Architecture:** The system operates with no dedicated servers, making it highly scalable, reliable, and extremely cost-effective.
+```
+.
+├── index.html          # Cloudflare Pages entry point (the dashboard shell)
+├── script.js           # Dashboard behaviour (fetch schedule, report penalty)
+├── style.css           # Optional local styling (not referenced by default)
+└── worker
+    └── src
+        ├── index.js    # Cloudflare Worker (cron + API)
+        └── wrangler.toml
+```
 
-## 2. System Architecture
+## End-to-End Architecture
 
-The system consists of four primary components that interact in a specific flow:
+| Layer | What Runs Here | Key Responsibilities |
+| ----- | --------------- | -------------------- |
+| Cloudflare Worker | `worker/src/index.js` | Sends weekly SMS, exposes `/schedule` & `/report`, reads/writes KV |
+| Cloudflare KV | Namespace bound as `ROTATION_DB` | Stores `TEAM_MEMBERS`, `CURRENT_INDEX`, `PENALTY_BOX` |
+| Twilio | REST API | Delivers SMS messages to each teammate |
+| Cloudflare Pages | `index.html` + `script.js` | Public schedule dashboard + penalty report button |
 
-1.  **Cloudflare Pages (Frontend):** A static HTML/CSS/JavaScript site that serves as the user-facing dashboard. It is responsible for displaying the schedule and providing the interface to report a missed duty.
-2.  **Cloudflare Worker (Backend/API):** The core logic engine. It serves two functions:
-    *   **API:** Listens for `GET` requests from the Pages frontend to serve the current schedule data and `POST` requests to handle missed duty reports.
-    *   **Cron Job:** Executes on an automated schedule (e.g., weekly) to run the main notification logic.
-3.  **Cloudflare KV (Database):** A key-value data store that acts as the single source of truth for the application state. It stores the team member list, the current rotation index, and the penalty status.
-4.  **Twilio API (Notification Service):** An external service used by the Cloudflare Worker to send SMS messages.
+### Request & Notification Flow
 
-### Interaction Flow:
+1. **Dashboard Load**  
+   Browser requests the Cloudflare Pages site → `script.js` issues `GET https://<worker>/schedule` → Worker pulls state from KV → JSON payload paints the UI.
 
-*   **User Viewing Dashboard:**
-    1.  User's browser loads the Cloudflare Pages site.
-    2.  The JavaScript on the page sends a `GET` request to the `/schedule` endpoint of the Cloudflare Worker.
-    3.  The Worker reads data from the Cloudflare KV namespace.
-    4.  The Worker returns the schedule data as a JSON object.
-    5.  The JavaScript populates the HTML with the schedule data.
+2. **Weekly Cron Execution**  
+   Cloudflare Cron Trigger invokes `scheduled()` → Worker reads current rotation and penalty state → Updates penalty weeks or advances the rotation → Sends personalised SMS via Twilio → Writes new state back to KV.
 
-*   **Automated Notification Cycle (Cron Trigger):**
-    1.  The Cloudflare Cron Trigger activates the Worker on its schedule.
-    2.  The Worker's `scheduled` function executes.
-    3.  It reads the current state from Cloudflare KV (team list, index, penalty status).
-    4.  It determines the person on duty based on penalty or normal rotation logic.
-    5.  It loops through all team members, constructs a personalized message for each, and makes an API call to Twilio for every member.
-    6.  It updates the state in Cloudflare KV for the next cycle (advancing the index or decrementing penalty weeks).
+3. **Report Missed Duty**  
+   A teammate hits “Report Missed Duty” → Frontend sends `POST https://<worker>/report` → Worker identifies last week’s assignee → Saves `{ offenderIndex, weeksRemaining: 3 }` to `PENALTY_BOX` → Dashboard refresh shows penalty banner.
 
-*   **Reporting a Missed Duty:**
-    1.  User clicks the "Report Missed Duty" button on the Cloudflare Pages site.
-    2.  The JavaScript sends a `POST` request to the `/report` endpoint of the Cloudflare Worker.
-    3.  The Worker calculates who was on duty last week and writes a "Penalty Box" object to Cloudflare KV.
-    4.  The Worker returns a success message.
+## Cloudflare Worker (Backend)
 
-## 3. Data Schema (Cloudflare KV Namespace)
+### Environment Bindings
 
-The application requires a single KV Namespace bound to the Worker. The namespace must contain the following three keys:
+Configure the Worker with:
 
-### Key: `TEAM_MEMBERS`
+- **KV Namespace**: Bind `ROTATION_DB` to the namespace containing the rotation data.
+- **Secrets**: `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_PHONE_NUMBER` (set via `wrangler secret put` or the dashboard).
 
-*   **Purpose:** Stores the definitive list of all team members, their contact information, and the order of the rotation. The array's order dictates the rotation sequence.
-*   **Value Format:** A JSON array of objects. Each object must contain a `name` (string) and a `phone` (string in E.164 format).
+If `ROTATION_DB` is missing or misbound, the Worker now returns a JSON 500 with `"Server configuration error"` instead of throwing `Cannot read properties of undefined`.
 
-*   **Example Value:**
-    ```json
-    [
-      { "name": "Vardhan", "phone": "+15103344815" },
-      { "name": "Deep",    "phone": "+14084801297" },
-      { "name": "Shoumik", "phone": "+15127653750" },
-      { "name": "Aryan",   "phone": "+14152796774" },
-      { "name": "Vikram",  "phone": "+15105569320" },
-      { "name": "Shreyas", "phone": "+14088165339" },
-      { "name": "Daniel",  "phone": "+14698106937" },
-      { "name": "Soam",    "phone": "+14084069117" }
-    ]
-    ```
+### Scheduled Handler Logic
 
-### Key: `CURRENT_INDEX`
+High-level steps:
 
-*   **Purpose:** Tracks the current position in the `TEAM_MEMBERS` array for the normal rotation. This value is updated by the `scheduled` function.
-*   **Value Format:** A string containing an integer.
-*   **Example Value:** `3` (This would indicate Aryan is on duty in the example above).
+1. Validate that `ROTATION_DB` is available.
+2. Fetch `TEAM_MEMBERS`, `CURRENT_INDEX`, and optional `PENALTY_BOX`.
+3. If a penalty is active, decrement `weeksRemaining`; otherwise, advance `CURRENT_INDEX`.
+4. Calculate “on duty” and “next up” respecting penalty overrides.
+5. Loop through every teammate and send personalised SMS with their specific status.
 
-### Key: `ROTATION_START_DATE`
+### Fetch Handler API
 
-*   **Purpose:** An anchor date used for calculating future rotation dates. This should be set to the date of the first rotation for the person at index 0.
-*   **Value Format:** A string in `YYYY-MM-DD` format.
-*   **Example Value:** `2025-09-30`
+`/schedule` (GET)
 
-### Key: `PENALTY_BOX` (Optional)
+- Returns the current state for the dashboard: who is on duty, who handled last week, the full team config, current index, and penalty metadata.
+- On misconfiguration (missing binding or empty team), sends a structured 500 with CORS headers so the frontend can surface a friendly error.
 
-*   **Purpose:** This key is created by the `/report` endpoint when a duty is missed. The `scheduled` function reads this key to determine if the penalty logic should override the normal rotation.
-*   **Value Format:** A JSON object containing the index of the offender and the number of penalty weeks remaining. When weeksRemaining is `0`, the normal logic resumes.
-*   **Example Value:**
-    ```json
-    {
-      "offenderIndex": 2,
-      "weeksRemaining": 3
-    }
-    ```
+`/report` (POST)
 
-## 4. Environment Variables & Secrets
+- Identifies the offender as `(currentIndex - 1 + teamSize) % teamSize` (the person who should have worked last week).
+- Stores a `{ offenderIndex, weeksRemaining: 3 }` penalty object.
+- Handles missing binding or team data with JSON 500 responses.
 
-The Cloudflare Worker requires the following environment variables to be set in its settings for Twilio integration. These should be configured as **secrets**.
+### Worker Source (Authoritative Reference)
 
-| Variable Name         | Purpose                                             | Example Value                |
-| --------------------- | --------------------------------------------------- | ---------------------------- |
-| `TWILIO_ACCOUNT_SID`  | Your Twilio Account SID for API authentication.     | `ACxxxxxxxxxxxxxxxxxxxxxxxx` |
-| `TWILIO_AUTH_TOKEN`   | Your Twilio Auth Token for API authentication.      | `your_auth_token_string`     |
-| `TWILIO_PHONE_NUMBER` | The Twilio phone number used to send the SMS.       | `+15017122661`               |
-
-## 5. Codebase Structure and Final Code
-
-The project consists of three files.
-
-### 5.1. Backend (`index.js`)
-
-This file contains the complete logic for the Cloudflare Worker. It handles the cron-triggered notifications, serves the API for the frontend, and interacts with the KV store and Twilio.
-
-```javascript
-// File: index.js
+````javascript
+// File: worker/src/index.js
 
 export default {
-  /**
-   * This is the main automated function. It runs on a Cron Trigger (e.g., once a week).
-   * Its job is to calculate the schedule, send all notifications, and update the state for the next week.
-   */
   async scheduled(event, env, ctx) {
-    // 1. Get all necessary data from our Cloudflare KV database
-    const team = await env.ROTATION_DB.get('TEAM_MEMBERS', 'json');
+    let rotationDb
+    try {
+      rotationDb = getRotationDb(env)
+    } catch (error) {
+      console.error(error.message)
+      return
+    }
+
+    const team = await rotationDb.get('TEAM_MEMBERS', 'json')
     if (!team || team.length === 0) {
-      console.error("FATAL: Team data is missing or empty. Halting execution.");
-      return;
+      console.error('FATAL: Team data is missing or empty.')
+      return
     }
-    let currentIndex = parseInt(await env.ROTATION_DB.get('CURRENT_INDEX') || '0');
-    const penaltyBox = await env.ROTATION_DB.get('PENALTY_BOX', 'json') || {};
-    const teamSize = team.length;
 
-    let personOnDuty;
-    let isPenaltyWeek = false;
+    let currentIndex = parseInt((await rotationDb.get('CURRENT_INDEX')) || '0')
+    const penaltyBox = (await rotationDb.get('PENALTY_BOX', 'json')) || {}
+    const teamSize = team.length
 
-    // 2. Core Logic: Check if there's an active penalty
-    if (penaltyBox.weeksRemaining && penaltyBox.weeksRemaining > 0) {
-      // PENALTY LOGIC: Someone is serving a penalty.
-      isPenaltyWeek = true;
-      personOnDuty = team[penaltyBox.offenderIndex]; // The offender is on duty.
-      penaltyBox.weeksRemaining--; // Decrement their remaining weeks.
-      await env.ROTATION_DB.put('PENALTY_BOX', JSON.stringify(penaltyBox));
-      // IMPORTANT: We do NOT advance the currentIndex. The normal rotation is paused.
+    const isPenaltyActive =
+      penaltyBox.weeksRemaining && penaltyBox.weeksRemaining > 0
+
+    if (isPenaltyActive) {
+      penaltyBox.weeksRemaining--
+      await rotationDb.put('PENALTY_BOX', JSON.stringify(penaltyBox))
     } else {
-      // NORMAL LOGIC: No penalty, run the standard rotation.
-      personOnDuty = team[currentIndex];
-      const nextIndex = (currentIndex + 1) % teamSize;
-      await env.ROTATION_DB.put('CURRENT_INDEX', nextIndex.toString());
+      currentIndex = (currentIndex + 1) % teamSize
+      await rotationDb.put('CURRENT_INDEX', currentIndex.toString())
     }
 
-    // 3. Prepare data for SMS notifications
-    const nextPersonInRotation = team[(currentIndex + 1) % teamSize];
-    const thisWeekDate = new Date(); // Use today's date for "this week"
-    const nextWeekDate = new Date();
-    nextWeekDate.setDate(thisWeekDate.getDate() + 7);
+    let personOnDuty
+    let nextPersonUp
 
-    // 4. Loop through EVERYONE on the team to send them a personalized status update
+    if (isPenaltyActive) {
+      personOnDuty = team[penaltyBox.offenderIndex]
+      nextPersonUp = penaltyBox.weeksRemaining >= 1
+        ? personOnDuty
+        : team[currentIndex]
+    } else {
+      personOnDuty = team[currentIndex]
+      nextPersonUp = team[(currentIndex + 1) % teamSize]
+    }
+
     for (const [personIndex, person] of team.entries()) {
-      let weeksUntilTurn;
-      if (isPenaltyWeek && penaltyBox.offenderIndex === personIndex) {
-        weeksUntilTurn = 0; // If they are the offender, it's their turn.
-      } else {
-        // Calculate normal turn distance, ignoring any penalty
-        weeksUntilTurn = (personIndex - currentIndex + teamSize) % teamSize;
-      }
-      
-      const theirTurnDate = new Date();
-      theirTurnDate.setDate(theirTurnDate.getDate() + (weeksUntilTurn * 7));
+      let personalStatus = ''
+      const thisWeekDate = new Date()
 
-      // 5. Build the unique message for each person
-      let personalStatus = '';
-      if (weeksUntilTurn === 0) {
-        personalStatus = `It's your turn this week, ${person.name}!`;
-        if (isPenaltyWeek) {
-          personalStatus += ` This is week ${3 - penaltyBox.weeksRemaining} of 3 for your penalty.`
+      if (isPenaltyActive) {
+        if (personIndex === penaltyBox.offenderIndex) {
+          personalStatus = `⚠️ ${person.name}, you are on Trash Duty.\nThis is week ${
+            3 - penaltyBox.weeksRemaining
+          } of 3 for your penalty.`
+        } else {
+          const normalWeeksUntilTurn =
+            (personIndex - currentIndex + teamSize) % teamSize
+          const weeksUntilTurn =
+            normalWeeksUntilTurn + penaltyBox.weeksRemaining + 1
+          const theirTurnDate = new Date()
+          theirTurnDate.setDate(thisWeekDate.getDate() + weeksUntilTurn * 7)
+          const weekString = weeksUntilTurn === 1 ? 'week' : 'weeks'
+          personalStatus = `${
+            person.name
+          }, your next Trash Duty is in ${weeksUntilTurn} ${weekString} (week of ${formatDate(
+            theirTurnDate
+          )}).`
         }
-      } else if (weeksUntilTurn === 1 && !isPenaltyWeek) {
-        personalStatus = `Hi ${person.name}, your turn is next week.`;
       } else {
-        personalStatus = `${person.name}, your next turn is on ${formatDate(theirTurnDate)}, in ${weeksUntilTurn} weeks.`;
+        const weeksUntilTurn =
+          (personIndex - currentIndex + teamSize) % teamSize
+        const theirTurnDate = new Date()
+        theirTurnDate.setDate(thisWeekDate.getDate() + weeksUntilTurn * 7)
+        if (weeksUntilTurn === 0) {
+          personalStatus = `${
+            person.name
+          }, you are on Trash Duty this week (week of ${formatDate(
+            theirTurnDate
+          )}).`
+        } else {
+          const weekString = weeksUntilTurn === 1 ? 'week' : 'weeks'
+          personalStatus = `${
+            person.name
+          }, your next Trash Duty is in ${weeksUntilTurn} ${weekString} (week of ${formatDate(
+            theirTurnDate
+          )}).`
+        }
       }
-      
-      const messageBody = `Trash Duty:\n\n` +
-                          `1. This week (${formatDate(thisWeekDate)}): ${personOnDuty.name}\n` +
-                          `2. Next week (${formatDate(nextWeekDate)}): ${nextPersonInRotation.name}\n\n` +
-                          `${personalStatus}`;
 
-      // 6. Send the message
-      await sendSms(env, person.phone, messageBody);
+      const messageBody =
+        `${personalStatus}\n\n` +
+        `🎯 This Week: ${personOnDuty.name}\n` +
+        `➡️ Next Week: ${nextPersonUp.name}\n\n` +
+        `🗓️ Full Schedule:\n` +
+        `https://trash.kwon.ai\n\n` +
+        `❕ Missed a duty? Report it on the site.`
+
+      await sendSms(env, person.phone, messageBody)
     }
   },
 
-  /**
-   * This function acts as our API. It listens for requests from the frontend dashboard.
-   */
   async fetch(request, env, ctx) {
-    const url = new URL(request.url);
+    const url = new URL(request.url)
     const corsHeaders = {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type',
-    };
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type',
+    }
 
-    // Respond to pre-flight CORS requests
     if (request.method === 'OPTIONS') {
-        return new Response(null, { headers: corsHeaders });
+      return new Response(null, { headers: corsHeaders })
     }
 
-    // Endpoint to get schedule data for the dashboard
     if (url.pathname === '/schedule') {
-        const team = await env.ROTATION_DB.get('TEAM_MEMBERS', 'json');
-        const currentIndex = parseInt(await env.ROTATION_DB.get('CURRENT_INDEX') || '0');
-        const penaltyBox = await env.ROTATION_DB.get('PENALTY_BOX', 'json') || {};
-        const teamSize = team.length;
-
-        let onDutyName;
-        let penaltyInfo = {};
-        
-        if (penaltyBox.weeksRemaining > 0) {
-            onDutyName = team[penaltyBox.offenderIndex].name;
-            penaltyInfo = { weeksRemaining: penaltyBox.weeksRemaining };
-        } else {
-            onDutyName = team[currentIndex].name;
+      try {
+        const rotationDb = getRotationDb(env)
+        const team = await rotationDb.get('TEAM_MEMBERS', 'json')
+        if (!Array.isArray(team) || team.length === 0) {
+          throw new Error('Team data is missing or empty.')
         }
-        
-        const lastWeekIndex = (currentIndex - 1 + teamSize) % teamSize;
-        const lastWeekName = team[lastWeekIndex].name;
+        const currentIndex = parseInt(
+          (await rotationDb.get('CURRENT_INDEX')) || '0'
+        )
+        const penaltyBox =
+          (await rotationDb.get('PENALTY_BOX', 'json')) || {}
+        const teamSize = team.length
 
-        // Create a list of the next 3 people in the normal rotation
-        const upcoming = [
-            team[(currentIndex + 1) % teamSize].name,
-            team[(currentIndex + 2) % teamSize].name,
-            team[(currentIndex + 3) % teamSize].name,
-        ];
-        
+        let onDutyName,
+          lastWeekName,
+          penaltyInfo = {}
+        const isPenaltyActive =
+          penaltyBox.weeksRemaining && penaltyBox.weeksRemaining > 0
+
+        if (isPenaltyActive) {
+          onDutyName = team[penaltyBox.offenderIndex].name
+          const weekString = penaltyBox.weeksRemaining === 1 ? 'week' : 'weeks'
+          penaltyInfo = {
+            weeksRemaining: penaltyBox.weeksRemaining,
+            weekString: weekString,
+          }
+          if (penaltyBox.weeksRemaining < 3) {
+            lastWeekName = onDutyName
+          } else {
+            lastWeekName = team[(currentIndex - 1 + teamSize) % teamSize].name
+          }
+        } else {
+          onDutyName = team[currentIndex].name
+          lastWeekName = team[(currentIndex - 1 + teamSize) % teamSize].name
+        }
+
         const responseData = {
-            onDuty: onDutyName,
-            lastWeek: lastWeekName,
-            upcoming: upcoming,
-            penaltyInfo: penaltyInfo
-        };
+          onDuty: onDutyName,
+          lastWeek: lastWeekName,
+          team: team,
+          currentIndex: currentIndex,
+          penaltyBox: penaltyBox,
+          penaltyInfo: penaltyInfo,
+        }
 
-        return new Response(JSON.stringify(responseData), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+        return new Response(JSON.stringify(responseData), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        })
+      } catch (error) {
+        console.error('Failed to load schedule:', error.message)
+        return new Response(
+          JSON.stringify({
+            error: 'Server configuration error. Please try again later.',
+          }),
+          {
+            status: 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          }
+        )
+      }
     }
 
-    // Endpoint to report a missed duty
     if (url.pathname === '/report' && request.method === 'POST') {
-        const teamSize = (await env.ROTATION_DB.get('TEAM_MEMBERS', 'json')).length;
-        const currentIndex = parseInt(await env.ROTATION_DB.get('CURRENT_INDEX') || '0');
-        
-        // The offender is the person from *last week* relative to the current index
-        const offenderIndex = (currentIndex - 1 + teamSize) % teamSize;
+      let rotationDb
+      try {
+        rotationDb = getRotationDb(env)
+      } catch (error) {
+        console.error(error.message)
+        return new Response(
+          JSON.stringify({
+            error: 'Server configuration error. Please try again later.',
+          }),
+          {
+            status: 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          }
+        )
+      }
+      const teamData = await rotationDb.get('TEAM_MEMBERS', 'json')
+      if (!Array.isArray(teamData) || teamData.length === 0) {
+        return new Response(
+          JSON.stringify({
+            error: 'Team data is missing. Penalty cannot be recorded.',
+          }),
+          {
+            status: 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          }
+        )
+      }
+      const teamSize = teamData.length
+      const currentIndex = parseInt(
+        (await rotationDb.get('CURRENT_INDEX')) || '0'
+      )
+      const offenderIndex = (currentIndex - 1 + teamSize) % teamSize
 
-        const penalty = {
-            offenderIndex: offenderIndex,
-            weeksRemaining: 3
-        };
-        await env.ROTATION_DB.put('PENALTY_BOX', JSON.stringify(penalty));
+      const penalty = { offenderIndex: offenderIndex, weeksRemaining: 3 }
+      await rotationDb.put('PENALTY_BOX', JSON.stringify(penalty))
 
-        const responseData = { message: 'Penalty has been recorded. The schedule will update on the next rotation.' };
-        return new Response(JSON.stringify(responseData), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+      const responseData = {
+        message:
+          'Penalty has been recorded. The schedule will update on the next rotation.',
+      }
+
+      return new Response(JSON.stringify(responseData), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      })
     }
 
-    return new Response('Not Found', { status: 404 });
-  }
-};
+    return new Response('Not Found', { status: 404 })
+  },
+}
 
-
-// --- HELPER FUNCTIONS ---
-
-/**
- * Sends an SMS using the Twilio API.
- * @param {object} env - The environment object containing secrets.
- * @param {string} to - The recipient's phone number in E.164 format.
- * @param {string} body - The text message content.
- */
 async function sendSms(env, to, body) {
-  const url = `https://api.twilio.com/2010-04-01/Accounts/${env.TWILIO_ACCOUNT_SID}/Messages.json`;
+  const url = `https://api.twilio.com/2010-04-01/Accounts/${env.TWILIO_ACCOUNT_SID}/Messages.json`
   const data = new URLSearchParams({
     To: to,
     From: env.TWILIO_PHONE_NUMBER,
-    Body: body
-  });
-
+    Body: body,
+  })
   try {
     const response = await fetch(url, {
       method: 'POST',
       headers: {
-        'Authorization': 'Basic ' + btoa(`${env.TWILIO_ACCOUNT_SID}:${env.TWILIO_AUTH_TOKEN}`)
+        Authorization:
+          'Basic ' + btoa(`${env.TWILIO_ACCOUNT_SID}:${env.TWILIO_AUTH_TOKEN}`),
       },
-      body: data
-    });
+      body: data,
+    })
     if (!response.ok) {
-        const errorData = await response.json();
-        console.error(`Twilio Error for ${to}:`, errorData.message);
+      const errorData = await response.json()
+      console.error(`Twilio Error for ${to}:`, errorData.message)
     } else {
-        console.log(`Message sent successfully to ${to}`);
+      console.log(`Message sent successfully to ${to}`)
     }
   } catch (error) {
-      console.error(`Failed to send message to ${to}:`, error);
+    console.error(`Failed to send message to ${to}:`, error)
   }
 }
 
-/**
- * Formats a Date object into a readable string like "Oct 1".
- * @param {Date} date - The date to format.
- * @returns {string} - The formatted date string.
- */
-function formatDate(date) {
-  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
+function getRotationDb(env) {
+  const kv = env?.ROTATION_DB
+  if (!kv || typeof kv.get !== 'function') {
+    throw new Error('ROTATION_DB binding is not configured.')
+  }
+  return kv
 }
+
+function formatDate(date) {
+  return date.toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    timeZone: 'UTC',
+  })
+}
+````
+
+## Data Model (Cloudflare KV)
+
+| Key | Required? | Description |
+| --- | --------- | ----------- |
+| `TEAM_MEMBERS` | Yes | JSON array of `{ name, phone }` objects. Index order defines rotation order. |
+| `CURRENT_INDEX` | Yes | Stringified integer. Points to the teammate currently on duty when no penalty is active. |
+| `PENALTY_BOX` | Optional | JSON object `{ offenderIndex, weeksRemaining }`. Created when a penalty is filed and removed or reset by the rotation logic. |
+| `ROTATION_START_DATE` | Optional | Previously used for date math; kept for backwards compatibility if you still rely on it. The current logic computes dates relative to “today.” |
+
+Example `TEAM_MEMBERS` payload:
+
+```json
+[
+  { "name": "Vardhan", "phone": "+15103344815" },
+  { "name": "Deep",    "phone": "+14084801297" },
+  { "name": "Shoumik", "phone": "+15127653750" },
+  { "name": "Aryan",   "phone": "+14152796774" },
+  { "name": "Vikram",  "phone": "+15105569320" },
+  { "name": "Shreyas", "phone": "+14088165339" },
+  { "name": "Daniel",  "phone": "+14698106937" },
+  { "name": "Soam",    "phone": "+14084069117" }
+]
 ```
 
-### 5.2. Frontend HTML (`index.html`)
+## Frontend Dashboard
 
-This file defines the structure of the web dashboard.
+The Pages site is intentionally lightweight: plain HTML and vanilla JS. Swap in your own styling if you like—the data contract stays the same.
 
-```html
-<!-- File: index.html -->
+### `index.html`
+
+````html
 <!DOCTYPE html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Team Rotation Schedule</title>
-  <!-- Using a simple, clean CSS framework for looks -->
-  <link rel="stylesheet" href="https://cdn.simplecss.org/simple.min.css">
-  <style>
-    body { max-width: 800px; margin: auto; padding: 1rem; }
-    .danger-zone {
-      border: 2px solid #d9534f;
-      padding: 1rem;
-      margin-top: 2rem;
-      border-radius: 8px;
-    }
-    .danger-zone button {
-      background-color: #d9534f;
-      color: white;
-      border: none;
-    }
-    #penalty-status {
-      color: #d9534f;
-      font-weight: bold;
-      text-align: center;
-      padding: 0.5rem;
-      border: 1px solid #d9534f;
-      border-radius: 4px;
-      margin-bottom: 1rem;
-    }
-  </style>
-</head>
-<body>
-  <header>
-    <h1>Team Rotation Schedule</h1>
-    <!-- This div will only appear if a penalty is active -->
-    <div id="penalty-status" style="display: none;"></div>
-  </header>
-  <main>
-    <h2>🎯 On Duty This Week</h2>
-    <p id="on-duty">Loading...</p>
-    
-    <h2>⏮️ Last Week</h2>
-    <p id="last-week">Loading...</p>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Regent House Trash Duty</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🗑️</text></svg>"
+    />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <header>
+      <h1>Regent House Trash Duty</h1>
+    </header>
 
-    <h2>🗓️ Upcoming Rotation</h2>
-    <ul id="upcoming-list">
-      <li>Loading...</li>
-    </ul>
+    <main>
+      <div id="penalty-status" class="penalty-banner" style="display: none"></div>
 
-    <div class="danger-zone">
-      <h3>Missed Duty?</h3>
-      <p>If the person on duty last week (<strong id="last-week-report">...</strong>) did not complete the task, press this button to assign them a 3-week penalty.</p>
-      <button id="report-button">Report Missed Duty</button>
-      <p id="report-response"></p>
-    </div>
-  </main>
-  <!-- Link to our JavaScript file -->
-  <script src="script.js"></script>
-</body>
+      <div class="card hero-card">
+        <p class="label">🎯 On Duty This Week</p>
+        <h2 class="person-name" id="on-duty">Loading...</h2>
+        <p class="date-range" id="on-duty-dates">Loading...</p>
+      </div>
+
+      <div class="card">
+        <p class="label">🗓️ Upcoming Schedule</p>
+        <table class="schedule-table">
+          <thead>
+            <tr>
+              <th>Person</th>
+              <th>Week of</th>
+            </tr>
+          </thead>
+          <tbody id="upcoming-list"></tbody>
+        </table>
+      </div>
+
+      <div class="card danger-zone">
+        <h3>⚠️ Missed Duty?</h3>
+        <p>
+          If the person on duty last week (<strong id="last-week-report">...</strong>)
+          did not complete the task, press this button to assign a penalty.
+        </p>
+        <button id="report-button">Report Missed Duty</button>
+        <p id="report-response"></p>
+      </div>
+
+      <div class="secondary-info">
+        <p>Last Week: <strong id="last-week">...</strong></p>
+      </div>
+    </main>
+
+    <script src="script.js"></script>
+  </body>
 </html>
-```
+````
 
-### 5.3. Frontend JavaScript (`script.js`)
+### `script.js`
 
-This file handles all client-side logic for the dashboard, including fetching data from the Worker and handling the report button action.
+````javascript
+const WORKER_URL = 'https://your-worker-name.your-subdomain.workers.dev'
 
-```javascript
-// File: script.js
+const onDutyEl = document.getElementById('on-duty')
+const onDutyDatesEl = document.getElementById('on-duty-dates')
+const upcomingListEl = document.getElementById('upcoming-list')
+const penaltyStatusEl = document.getElementById('penalty-status')
+const lastWeekReportEl = document.getElementById('last-week-report')
+const reportButton = document.getElementById('report-button')
+const reportResponseEl = document.getElementById('report-response')
+const lastWeekEl = document.getElementById('last-week')
 
-// IMPORTANT: This URL must be replaced with the deployed Cloudflare Worker URL.
-const WORKER_URL = 'https://your-worker-name.your-subdomain.workers.dev';
+const MAX_UPCOMING_ROWS = 3
 
-// Get references to all the HTML elements we need to update
-const onDutyEl = document.getElementById('on-duty');
-const lastWeekEl = document.getElementById('last-week');
-const upcomingList = document.getElementById('upcoming-list');
-const penaltyStatusEl = document.getElementById('penalty-status');
-const lastWeekReportEl = document.getElementById('last-week-report');
-const reportButton = document.getElementById('report-button');
-const reportResponseEl = document.getElementById('report-response');
+const getStartOfWeek = (d) => {
+  const date = new Date(d)
+  const day = date.getDay()
+  const diff = date.getDate() - day + (day === 0 ? -6 : 1)
+  return new Date(date.setDate(diff))
+}
 
-/**
- * Fetches the current schedule data from our Worker API and updates the webpage.
- */
+const formatDate = (date) =>
+  date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+
+const deriveUpcoming = (data) => {
+  if (Array.isArray(data.upcoming) && data.upcoming.length > 0) {
+    return data.upcoming
+  }
+
+  const team = Array.isArray(data.team) ? data.team : []
+  if (team.length === 0) return []
+
+  const currentIndex = Number.parseInt(data.currentIndex, 10)
+  if (Number.isNaN(currentIndex)) return []
+
+  const penaltyBox = data.penaltyBox || {}
+  let penaltyWeeks = Number.parseInt(penaltyBox.weeksRemaining, 10)
+  if (Number.isNaN(penaltyWeeks) || penaltyWeeks < 0) penaltyWeeks = 0
+  const offenderIndex = Number.isInteger(penaltyBox.offenderIndex)
+    ? penaltyBox.offenderIndex
+    : undefined
+
+  const names = []
+  let pointer = currentIndex
+
+  for (let step = 0; step < MAX_UPCOMING_ROWS; step++) {
+    if (penaltyWeeks > 0 && offenderIndex !== undefined) {
+      const offender = team[offenderIndex]
+      if (!offender) break
+      names.push(offender.name)
+      penaltyWeeks--
+      continue
+    }
+
+    pointer = (pointer + 1) % team.length
+    const person = team[pointer]
+    if (!person) break
+    names.push(person.name)
+  }
+
+  return names
+}
+
 async function fetchSchedule() {
   try {
-    const response = await fetch(`${WORKER_URL}/schedule`);
-    if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-    const data = await response.json();
+    const response = await fetch(`${WORKER_URL}/schedule`)
+    if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`)
+    const data = await response.json()
 
-    // Update the main dashboard elements
-    onDutyEl.textContent = data.onDuty;
-    lastWeekEl.textContent = data.lastWeek;
-    lastWeekReportEl.textContent = data.lastWeek; // Also update the text in the report section
+    const today = new Date()
+    const startOfWeek = getStartOfWeek(today)
+    const endOfWeek = new Date(startOfWeek)
+    endOfWeek.setDate(startOfWeek.getDate() + 6)
 
-    // Clear the "Loading..." text and populate the upcoming list
-    upcomingList.innerHTML = '';
-    data.upcoming.forEach(name => {
-      const li = document.createElement('li');
-      li.textContent = name;
-      upcomingList.appendChild(li);
-    });
+    onDutyEl.textContent = data.onDuty
+    onDutyDatesEl.textContent = `${formatDate(startOfWeek)} – ${formatDate(
+      endOfWeek
+    )}`
 
-    // Handle the display of the penalty status banner
-    if (data.penaltyInfo && data.penaltyInfo.weeksRemaining > 0) {
-      penaltyStatusEl.textContent = `PENALTY ACTIVE: ${data.onDuty} has ${data.penaltyInfo.weeksRemaining} week(s) remaining. The normal rotation is paused.`;
-      penaltyStatusEl.style.display = 'block'; // Make the banner visible
-    } else {
-      penaltyStatusEl.style.display = 'none'; // Hide the banner if no penalty
+    lastWeekEl.textContent = data.lastWeek
+    lastWeekReportEl.textContent = data.lastWeek
+
+    const upcomingNames = deriveUpcoming(data)
+    upcomingListEl.innerHTML = ''
+
+    if (upcomingNames.length === 0) {
+      const row = document.createElement('tr')
+      const cell = document.createElement('td')
+      cell.colSpan = 2
+      cell.textContent = 'No upcoming rotation data available.'
+      row.appendChild(cell)
+      upcomingListEl.appendChild(row)
     }
 
+    upcomingNames.forEach((name, index) => {
+      const upcomingWeekStart = new Date(startOfWeek)
+      upcomingWeekStart.setDate(startOfWeek.getDate() + (index + 1) * 7)
+
+      const row = document.createElement('tr')
+      const nameCell = document.createElement('td')
+      const dateCell = document.createElement('td')
+
+      nameCell.textContent = name
+      dateCell.textContent = formatDate(upcomingWeekStart)
+
+      row.appendChild(nameCell)
+      row.appendChild(dateCell)
+      upcomingListEl.appendChild(row)
+    })
+
+    if (data.penaltyInfo && data.penaltyInfo.weeksRemaining > 0) {
+      penaltyStatusEl.textContent = `PENALTY ACTIVE: ${data.onDuty} has ${data.penaltyInfo.weeksRemaining} ${data.penaltyInfo.weekString} remaining. The normal rotation is paused.`
+      penaltyStatusEl.style.display = 'block'
+    } else if (data.error) {
+      penaltyStatusEl.textContent = data.error
+      penaltyStatusEl.style.display = 'block'
+    } else {
+      penaltyStatusEl.style.display = 'none'
+    }
   } catch (error) {
-    console.error('Failed to fetch schedule:', error);
-    onDutyEl.textContent = 'Could not load schedule. Check the Worker URL and status.';
+    console.error('Failed to fetch schedule:', error)
+    onDutyEl.textContent = 'Could not load schedule.'
   }
 }
 
-/**
- * Event listener for the "Report Missed Duty" button.
- */
 reportButton.addEventListener('click', async () => {
-  // Confirm the action with the user
-  if (!confirm(`Are you sure you want to report ${lastWeekReportEl.textContent} for missing their duty?`)) {
-    return;
-  }
-  
+  if (
+    !confirm(
+      `Are you sure you want to report ${lastWeekReportEl.textContent} for missing their duty?`
+    )
+  )
+    return
+
   try {
-    reportButton.disabled = true;
-    reportResponseEl.textContent = 'Submitting report...';
-
-    // Send the POST request to our Worker's /report endpoint
-    const response = await fetch(`${WORKER_URL}/report`, { method: 'POST' });
-    const result = await response.json();
-
-    reportResponseEl.textContent = result.message;
-    // Refresh the schedule to show the new penalty status immediately
-    fetchSchedule();
+    reportButton.disabled = true
+    reportResponseEl.textContent = 'Submitting report...'
+    const response = await fetch(`${WORKER_URL}/report`, { method: 'POST' })
+    const result = await response.json()
+    reportResponseEl.textContent = result.message || result.error
+    await fetchSchedule()
   } catch (error) {
-    reportResponseEl.textContent = 'An error occurred. Please try again.';
+    reportResponseEl.textContent = 'An error occurred. Please try again.'
   } finally {
-    // Re-enable the button whether it succeeded or failed
-    reportButton.disabled = false;
+    reportButton.disabled = false
   }
-});
+})
 
-// Fetch the schedule for the first time when the page loads
-document.addEventListener('DOMContentLoaded', fetchSchedule);
+document.addEventListener('DOMContentLoaded', fetchSchedule)
+````
+
+The frontend now derives the “Upcoming Schedule” directly from `team`, `currentIndex`, and `penaltyBox`, so the UI stays accurate even if the Worker omits an `upcoming` array.
+
+## Deployment Playbook
+
+### Prerequisites
+
+- Cloudflare account with Workers & Pages enabled.
+- Twilio account with messaging-capable number.
+- `wrangler` CLI (v3+) installed locally.
+
+### Backend (Worker)
+
+1. **Create KV Namespace** → `Workers & Pages` → `KV` → `Create namespace` (e.g., `trash-duty-rotation`).
+2. **Bind Namespace** → Worker → `Settings` → `Variables` → `KV Namespace Bindings` → Add binding with variable name `ROTATION_DB`.
+3. **Populate Keys** → Use the dashboard or `wrangler kv:key put` to upload `TEAM_MEMBERS`, `CURRENT_INDEX`, and optional `PENALTY_BOX` (omit to start clean).
+4. **Upload Code** → Deploy the Worker with `wrangler deploy` or Cloudflare dashboard quick edit using `worker/src/index.js`.
+5. **Add Secrets** → `wrangler secret put TWILIO_ACCOUNT_SID` (repeat for the other two secrets) or set them in the dashboard.
+6. **Cron Trigger** → Worker → `Triggers` → `Add Cron` → choose your cadence (e.g., `0 16 * * 4` for Thursdays at 16:00 UTC).
+
+### Frontend (Pages)
+
+1. **Customize `WORKER_URL`** in `script.js` so the dashboard knows where to fetch data.
+2. **Push to GitHub** (or any git provider Pages supports).
+3. **Create Pages Project** → `Workers & Pages` → `Create application` → `Pages` → `Connect to Git` → select repository.
+4. **Build Settings** → Framework preset “None”; build command empty; output directory `/`.
+5. **Deploy** → Cloudflare will provide a permanent URL (map a custom domain if you’d like).
+
+## Operations & Maintenance
+
+- **Verify KV Binding**: If `/schedule` returns `{ "error": "Server configuration error..." }`, confirm the namespace is bound as `ROTATION_DB` in both Preview and Production environments.
+- **Twilio Monitoring**: Twilio errors are logged with `console.error`. Check Cloudflare Worker logs if SMS are not delivered.
+- **Adjusting the rotation**: Update the `TEAM_MEMBERS` JSON (order matters). Optionally reset `CURRENT_INDEX` to align with a new starting point.
+- **Clearing penalties**: Delete `PENALTY_BOX` or set `weeksRemaining` to `0` in KV to resume normal rotation immediately.
+
+### Testing Notifications Without Spamming the Team
+
+1. Copy the current `TEAM_MEMBERS` value and store it locally.
+2. Replace all phone numbers with your own test number.
+3. Trigger the Worker manually from the Cloudflare dashboard (`Quick Edit` → `Send`).
+4. Restore the original JSON when finished.
+
+## Local Development Tips
+
+- Use `wrangler dev --test-scheduled` to simulate cron execution locally (ensure you stub the Twilio fetch or use test credentials).
+- Cloudflare’s preview environment has its own bindings—double-check the KV namespace and secrets are configured for both environments if using `wrangler`.
+
+## Appendix: Wrangler Configuration
+
+```
+name = "regent-house-trash-duty-notif-worker"
+compatibility_date = "2025-09-26"
+main = "src/index.js"
+
+[observability.logs]
+enabled = true
 ```
 
-## 6. Deployment and Setup
-
-A step-by-step guide to deploy the system.
-
-### Prerequisites:
-
-1.  A Cloudflare account.
-2.  A Twilio account with a provisioned phone number, Account SID, and Auth Token.
-3.  A GitHub account.
-
-### Step A: Deploy the Backend (Cloudflare Worker)
-
-1.  **Create KV Namespace:** In the Cloudflare dashboard, navigate to `Workers & Pages` -> `KV`. Create a new namespace (e.g., `ROTATION_DB`).
-2.  **Add Data to KV:** Add the three keys (`TEAM_MEMBERS`, `CURRENT_INDEX`, `ROTATION_START_DATE`) with their corresponding values as defined in Section 3.
-3.  **Create Worker:** Navigate to `Workers & Pages`, click `Create application` -> `Workers` -> `Create Worker`. Give it a unique name (e.g., `team-rotation-worker`) and deploy.
-4.  **Add Code:** Click `Quick Edit`, delete the default code, and paste the entire contents of the `index.js` file. Click `Save and Deploy`.
-5.  **Configure Bindings:** Go to the Worker's `Settings` -> `Variables`. Under `KV Namespace Bindings`, add a binding. Set the **Variable name** to `ROTATION_DB` and select the KV namespace created in step 1.
-6.  **Add Secrets:** In the same `Variables` section, under `Environment Variables`, add the three Twilio secrets (`TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_PHONE_NUMBER`) as defined in Section 4. Encrypt the token.
-7.  **Set Cron Trigger:** Go to the Worker's `Triggers` tab. Add a `Cron Trigger` with your desired schedule (e.g., `0 16 * * 4` for every Thursday at 4 PM UTC).
-
-### Step B: Deploy the Frontend (Cloudflare Pages)
-
-1.  **Prepare Files:** Create a local folder. Place the `index.html` and `script.js` files inside it.
-2.  **Update Worker URL:** Open `script.js` and replace the placeholder `WORKER_URL` with the actual URL of your deployed Worker.
-3.  **Upload to GitHub:** Create a new GitHub repository and upload the folder contents.
-4.  **Connect Cloudflare Pages:** In the Cloudflare dashboard, go to `Workers & Pages` -> `Create application` -> `Pages` -> `Connect to Git`.
-5.  **Deploy:** Select your GitHub repository. The build settings can be left as default (no framework preset). Click `Save and Deploy`. Cloudflare will provide a public URL for the dashboard.
-
-## 7. Operational Management
-
-### Testing Notifications Safely
-
-To test the SMS notifications without sending messages to the entire team:
-
-1.  **Backup Data:** Copy the value of the `TEAM_MEMBERS` key from your KV namespace and save it to a local file.
-2.  **Create Test Data:** Edit the `TEAM_MEMBERS` JSON array, replacing every `phone` number with your own test phone number.
-3.  **Update KV:** Paste this new test data as the value for the `TEAM_MEMBERS` key in KV.
-4.  **Manually Trigger:** Go to the Worker in the Cloudflare dashboard, click `Quick Edit`, and click the `Send` button in the right-hand pane to simulate a scheduled event.
-5.  **Restore:** Once testing is complete, paste the original backup data back into the `TEAM_MEMBERS` key.
+Set this file (`worker/src/wrangler.toml`) as the root when running `wrangler` commands, or pass `--config worker/src/wrangler.toml` from the repo root.
