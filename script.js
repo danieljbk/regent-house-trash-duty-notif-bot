@@ -125,20 +125,26 @@ async function fetchSchedule() {
     })
 
     // --- 5. Handle Penalty Banner ---
-    if (data.penaltyInfo && data.penaltyInfo.weeksRemaining > 0) {
-      const info = data.penaltyInfo
-      const offenderName = info.offenderName || data.lastWeek
-      const bannerText = info.bannerText
-        ? info.bannerText
-        : info.isActive
-          ? `PENALTY ACTIVE: ${offenderName} has ${info.weeksRemaining} ${info.weekString} remaining. The normal rotation is paused.`
-          : info.startsNextRotation
-            ? `Penalty recorded: ${offenderName} owes ${info.weeksRemaining} ${info.weekString}. The rotation will pause after this week.`
-            : `Penalty recorded for ${offenderName}.`
-
-      penaltyStatusEl.textContent = bannerText
+    const penaltyInfo = data.penaltyInfo
+    if (penaltyInfo && penaltyInfo.bannerText) {
+      penaltyStatusEl.textContent = penaltyInfo.bannerText
+      penaltyStatusEl.style.display = 'block'
+    } else if (penaltyInfo && penaltyInfo.isActive) {
+      const offenderName = penaltyInfo.offenderName || data.lastWeek
+      const afterWeekCount = penaltyInfo.weeksRemainingAfterCurrent ?? 0
+      const afterWeekWord = afterWeekCount === 1 ? 'week' : 'weeks'
+      const message = penaltyInfo.isFinalWeek
+        ? `PENALTY ACTIVE: ${offenderName} is serving the final penalty week. The normal rotation resumes next week.`
+        : `PENALTY ACTIVE: ${offenderName} is on week ${penaltyInfo.currentWeek} of ${penaltyInfo.totalWeeks}. ${afterWeekCount} ${afterWeekWord} remain afterward.`
+      penaltyStatusEl.textContent = message
+      penaltyStatusEl.style.display = 'block'
+    } else if (penaltyInfo && penaltyInfo.startsNextRotation) {
+      const offenderName = penaltyInfo.offenderName || data.lastWeek
+      const weekWord = penaltyInfo.weekString || 'weeks'
+      penaltyStatusEl.textContent = `Penalty recorded: ${offenderName} owes ${penaltyInfo.weeksRemaining} ${weekWord}. The rotation will pause when their turn arrives.`
       penaltyStatusEl.style.display = 'block'
     } else {
+      penaltyStatusEl.textContent = ''
       penaltyStatusEl.style.display = 'none'
     }
   } catch (error) {

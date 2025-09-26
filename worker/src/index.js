@@ -218,47 +218,61 @@ export default {
 
         if (offenderValid) {
           const offender = team[offenderIndex]
-        const penaltyActive = offender && futureWeeks > 0
-        const penaltyPending =
-          offender && !penaltyActive && offenderIndex === currentIndex
+          const offenderIsCurrent = offenderIndex === currentIndex
+          const totalPenaltyWeeks = PENALTY_LENGTH
+          const weeksIncludingCurrent = offenderIsCurrent
+            ? Math.min(totalPenaltyWeeks, futureWeeks + 1)
+            : futureWeeks
 
-        if (penaltyActive || penaltyPending) {
-          const weeksServed =
-            penaltyActive
-              ? PENALTY_LENGTH - futureWeeks
-              : 0
-          const displayWeeksRemaining = penaltyActive
-            ? futureWeeks
-            : 1
-            const weekString =
-              displayWeeksRemaining === 1 ? 'week' : 'weeks'
-            let bannerText = ''
-
-            if (penaltyActive) {
-              const servedString =
-                weeksServed === 1 ? 'week' : 'weeks'
-              bannerText = `PENALTY ACTIVE: ${offender.name} has completed ${weeksServed} ${servedString} of ${PENALTY_LENGTH}. ${displayWeeksRemaining} ${weekString} remain.`
-            } else {
-              bannerText = `Penalty recorded: ${offender.name} begins a ${PENALTY_LENGTH}-week penalty next rotation.`
-            }
+          if (offender && offenderIsCurrent) {
+            const weeksServed = Math.max(
+              0,
+              totalPenaltyWeeks - weeksIncludingCurrent
+            )
+            const activeWeekNumber = weeksServed + 1
+            const weeksAfterThisWeek = Math.max(0, futureWeeks)
+            const remainingWeekWord =
+              weeksAfterThisWeek === 1 ? 'week' : 'weeks'
+            const isFinalWeek = weeksAfterThisWeek === 0
+            const activeBanner = isFinalWeek
+              ? `PENALTY ACTIVE: ${offender.name} is serving the final penalty week (${totalPenaltyWeeks}/${totalPenaltyWeeks}). The normal rotation resumes next week.`
+              : `PENALTY ACTIVE: ${offender.name} is on week ${activeWeekNumber} of ${totalPenaltyWeeks}. ${weeksAfterThisWeek} ${remainingWeekWord} will remain afterward.`
 
             penaltyInfo = {
               offenderName: offender.name,
-              weeksRemaining: displayWeeksRemaining,
+              weeksRemaining: weeksIncludingCurrent,
               rawWeeksRemaining: futureWeeks,
               weeksServed,
-              weekString,
-              isActive: penaltyActive,
-              startsNextRotation: penaltyPending,
-              bannerText,
+              currentWeek: activeWeekNumber,
+              weekString: weeksIncludingCurrent === 1 ? 'week' : 'weeks',
+              weeksRemainingAfterCurrent: weeksAfterThisWeek,
+              totalWeeks: totalPenaltyWeeks,
+              isActive: true,
+              startsNextRotation: false,
+              isFinalWeek,
+              bannerText: activeBanner,
             }
 
-            if (penaltyPending) {
-              lastWeekName = offender.name
-            } else if (penaltyActive) {
-              onDutyName = offender.name
-              lastWeekName = offender.name
+            onDutyName = offender.name
+            lastWeekName = offender.name
+          } else if (offender && futureWeeks > 0) {
+            const weekString = futureWeeks === 1 ? 'week' : 'weeks'
+            penaltyInfo = {
+              offenderName: offender.name,
+              weeksRemaining: futureWeeks,
+              rawWeeksRemaining: futureWeeks,
+              weeksServed: 0,
+              currentWeek: 0,
+              weekString,
+              weeksRemainingAfterCurrent: futureWeeks,
+              totalWeeks: totalPenaltyWeeks,
+              isActive: false,
+              startsNextRotation: true,
+              isFinalWeek: false,
+              bannerText: `Penalty recorded: ${offender.name} owes ${futureWeeks} ${weekString}. The rotation will pause when their turn arrives.`,
             }
+
+            lastWeekName = offender.name
           }
         }
 
