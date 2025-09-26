@@ -174,7 +174,7 @@ export default {
         `🎯 This Week: ${personOnDuty.name}\n` +
         `➡️ Next Week: ${nextPersonUp.name}\n\n` +
         `🗓️ Full Schedule:\n` +
-        `https://trash.kwon.ai\n\n` +
+        `https://trashbot.kwon.ai\n\n` +
         `❕ Missed a duty? Report it on the site.`
 
       await sendSms(env, person.phone, messageBody)

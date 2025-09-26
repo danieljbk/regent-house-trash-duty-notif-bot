@@ -1,4 +1,4 @@
-name = "regent-house-trash-duty-notif-worker"
+name = "regent-house-trash-bot-worker"
 compatibility_date = "2025-09-26"
 main = "src/index.js" # Or the correct path to your entry script
 
