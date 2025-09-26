@@ -5,3 +5,7 @@ main = "src/index.js" # Or the correct path to your entry script
 # wrangler.toml (wrangler v3.88.0^)
 [observability.logs]
 enabled = true
+
+[[kv_namespaces]]
+binding = "ROTATION_DB"
+id = "f32cc040d3b0409484dfc110e0bfa35e"
