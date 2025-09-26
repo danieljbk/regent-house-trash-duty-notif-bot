@@ -59,6 +59,7 @@ export default {
         offenderIndex: penaltyBox.offenderIndex,
         offender: penaltyOffender,
         remainingAfterThisWeek,
+        weeksServed: PENALTY_LENGTH - penaltyWeeks,
       }
 
       await rotationDb.put(
@@ -104,13 +105,14 @@ export default {
           personalStatus = `⚠️ ${
             person.name
           }, you are on Trash Duty.\nThis is week ${
-            PENALTY_LENGTH - activePenalty.remainingAfterThisWeek
+            activePenalty.weeksServed + 1
           } of ${PENALTY_LENGTH} for your penalty.`
         } else {
           const normalWeeksUntilTurn =
             (personIndex - currentIndex + teamSize) % teamSize
           const weeksUntilTurn =
-            normalWeeksUntilTurn + activePenalty.remainingAfterThisWeek
+            normalWeeksUntilTurn +
+            Math.max(0, activePenalty.remainingAfterThisWeek)
           const theirTurnDate = new Date()
           theirTurnDate.setDate(thisWeekDate.getDate() + weeksUntilTurn * 7)
           const weekString = weeksUntilTurn === 1 ? 'week' : 'weeks'
@@ -216,28 +218,35 @@ export default {
 
         if (offenderValid) {
           const offender = team[offenderIndex]
-          const penaltyActive = offender && futureWeeks > 0
-          const penaltyPending =
-            offender && !penaltyActive && offenderIndex === currentIndex
+        const penaltyActive = offender && futureWeeks > 0
+        const penaltyPending =
+          offender && !penaltyActive && offenderIndex === currentIndex
 
-          if (penaltyActive || penaltyPending) {
-            const displayWeeksRemaining = penaltyActive
-              ? futureWeeks
-              : 1
+        if (penaltyActive || penaltyPending) {
+          const weeksServed =
+            penaltyActive
+              ? PENALTY_LENGTH - futureWeeks
+              : 0
+          const displayWeeksRemaining = penaltyActive
+            ? futureWeeks
+            : 1
             const weekString =
               displayWeeksRemaining === 1 ? 'week' : 'weeks'
             let bannerText = ''
 
             if (penaltyActive) {
-              bannerText = `PENALTY ACTIVE: ${offender.name} has ${displayWeeksRemaining} ${weekString} remaining. The normal rotation is paused.`
+              const servedString =
+                weeksServed === 1 ? 'week' : 'weeks'
+              bannerText = `PENALTY ACTIVE: ${offender.name} has completed ${weeksServed} ${servedString} of ${PENALTY_LENGTH}. ${displayWeeksRemaining} ${weekString} remain.`
             } else {
-              bannerText = `Penalty recorded: ${offender.name} owes ${displayWeeksRemaining} ${weekString}. The rotation will pause after this week.`
+              bannerText = `Penalty recorded: ${offender.name} begins a ${PENALTY_LENGTH}-week penalty next rotation.`
             }
 
             penaltyInfo = {
               offenderName: offender.name,
               weeksRemaining: displayWeeksRemaining,
               rawWeeksRemaining: futureWeeks,
+              weeksServed,
               weekString,
               isActive: penaltyActive,
               startsNextRotation: penaltyPending,
@@ -357,9 +366,9 @@ export default {
         console.info(
           `Penalty activated for ${offender.name}. Future penalty weeks queued: ${penalty.weeksRemaining}`
         )
-        const penaltyMessage =
+          const penaltyMessage =
           `⚠️ Penalty filed: ${offender.name} missed trash duty.` +
-          `\n${offender.name} is now assigned for the next ${PENALTY_LENGTH} weeks.` +
+          `\n${offender.name} will serve a ${PENALTY_LENGTH}-week penalty starting now.` +
           `\n\nCheck the schedule: https://trashbot.kwon.ai`
 
         const recipients = teamData.filter(
