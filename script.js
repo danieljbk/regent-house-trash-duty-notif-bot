@@ -128,15 +128,13 @@ async function fetchSchedule() {
     if (data.penaltyInfo && data.penaltyInfo.weeksRemaining > 0) {
       const info = data.penaltyInfo
       const offenderName = info.offenderName || data.lastWeek
-      let bannerText = ''
-
-      if (info.isActive) {
-        bannerText = `PENALTY ACTIVE: ${offenderName} has ${info.weeksRemaining} ${info.weekString} remaining. The normal rotation is paused.`
-      } else if (info.startsNextRotation) {
-        bannerText = `Penalty recorded: ${offenderName} owes ${info.weeksRemaining} ${info.weekString}. The rotation will pause after this week.`
-      } else {
-        bannerText = `Penalty recorded for ${offenderName}.`
-      }
+      const bannerText = info.bannerText
+        ? info.bannerText
+        : info.isActive
+          ? `PENALTY ACTIVE: ${offenderName} has ${info.weeksRemaining} ${info.weekString} remaining. The normal rotation is paused.`
+          : info.startsNextRotation
+            ? `Penalty recorded: ${offenderName} owes ${info.weeksRemaining} ${info.weekString}. The rotation will pause after this week.`
+            : `Penalty recorded for ${offenderName}.`
 
       penaltyStatusEl.textContent = bannerText
       penaltyStatusEl.style.display = 'block'
