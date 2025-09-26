@@ -1,18 +1,38 @@
-// IMPORTANT: Replace this with your actual Cloudflare Worker URL
+// FINAL VERSION: script.js
+
 const WORKER_URL =
   'https://regent-house-trash-duty-notif-worker.djbkwon.workers.dev'
 
-// Get references to all the HTML elements we need to update
+// Get references to all the HTML elements
 const onDutyEl = document.getElementById('on-duty')
-const lastWeekEl = document.getElementById('last-week')
-const upcomingList = document.getElementById('upcoming-list')
+const onDutyDatesEl = document.getElementById('on-duty-dates')
+const upcomingListEl = document.getElementById('upcoming-list')
 const penaltyStatusEl = document.getElementById('penalty-status')
 const lastWeekReportEl = document.getElementById('last-week-report')
 const reportButton = document.getElementById('report-button')
 const reportResponseEl = document.getElementById('report-response')
+const lastWeekEl = document.getElementById('last-week')
+
+// --- NEW, STABLE DATE HELPER FUNCTIONS ---
 
 /**
- * Fetches the current schedule data from our Worker API and updates the webpage.
+ * Calculates the date of the Monday for the week of the given date.
+ * @param {Date} d - The reference date.
+ * @returns {Date} - The date of the Monday of that week.
+ */
+const getStartOfWeek = (d) => {
+  const date = new Date(d)
+  const day = date.getDay() // Sunday = 0, Monday = 1, etc.
+  const diff = date.getDate() - day + (day === 0 ? -6 : 1) // Adjust for Sunday
+  return new Date(date.setDate(diff))
+}
+
+const formatDate = (date) => {
+  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+}
+
+/**
+ * Fetches the schedule and updates the entire webpage.
  */
 async function fetchSchedule() {
   try {
@@ -20,30 +40,51 @@ async function fetchSchedule() {
     if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`)
     const data = await response.json()
 
-    // Update the main dashboard elements
-    onDutyEl.textContent = data.onDuty
-    lastWeekEl.textContent = data.lastWeek
-    lastWeekReportEl.textContent = data.lastWeek // Also update the text in the report section
+    // --- 1. ESTABLISH STABLE DATE ANCHORS ---
+    const today = new Date()
+    const startOfWeek = getStartOfWeek(today) // The Monday of this week
+    const endOfWeek = new Date(startOfWeek)
+    endOfWeek.setDate(startOfWeek.getDate() + 6) // The Sunday of this week
 
-    // Clear the "Loading..." text and populate the upcoming list
-    upcomingList.innerHTML = ''
-    data.upcoming.forEach((name) => {
-      const li = document.createElement('li')
-      li.textContent = name
-      upcomingList.appendChild(li)
+    // --- 2. Populate Hero Card with Correct Dates ---
+    onDutyEl.textContent = data.onDuty
+    onDutyDatesEl.textContent = `${formatDate(startOfWeek)} – ${formatDate(
+      endOfWeek
+    )}`
+
+    // --- 3. Populate Secondary Info ---
+    lastWeekEl.textContent = data.lastWeek
+    lastWeekReportEl.textContent = data.lastWeek
+
+    // --- 4. Populate Upcoming Schedule Table with Correct Dates ---
+    upcomingListEl.innerHTML = '' // Clear previous entries
+    data.upcoming.forEach((person, index) => {
+      // Calculate each upcoming week's Monday based on the stable anchor
+      const upcomingWeekStart = new Date(startOfWeek)
+      upcomingWeekStart.setDate(startOfWeek.getDate() + (index + 1) * 7)
+
+      const row = document.createElement('tr')
+      const nameCell = document.createElement('td')
+      const dateCell = document.createElement('td')
+
+      nameCell.textContent = person
+      dateCell.textContent = formatDate(upcomingWeekStart)
+
+      row.appendChild(nameCell)
+      row.appendChild(dateCell)
+      upcomingListEl.appendChild(row)
     })
 
-    // Handle the display of the penalty status banner
+    // --- 5. Handle Penalty Banner ---
     if (data.penaltyInfo && data.penaltyInfo.weeksRemaining > 0) {
-      penaltyStatusEl.textContent = `PENALTY ACTIVE: ${data.onDuty} has ${data.penaltyInfo.weeksRemaining} week(s) remaining. The normal rotation is paused.`
-      penaltyStatusEl.style.display = 'block' // Make the banner visible
+      penaltyStatusEl.textContent = `PENALTY ACTIVE: ${data.onDuty} has ${data.penaltyInfo.weeksRemaining} ${data.penaltyInfo.weekString} remaining. The normal rotation is paused.`
+      penaltyStatusEl.style.display = 'block'
     } else {
-      penaltyStatusEl.style.display = 'none' // Hide the banner if no penalty
+      penaltyStatusEl.style.display = 'none'
     }
   } catch (error) {
     console.error('Failed to fetch schedule:', error)
-    onDutyEl.textContent =
-      'Could not load schedule. Check the Worker URL and status.'
+    onDutyEl.textContent = 'Could not load schedule.'
   }
 }
 
@@ -51,33 +92,26 @@ async function fetchSchedule() {
  * Event listener for the "Report Missed Duty" button.
  */
 reportButton.addEventListener('click', async () => {
-  // Confirm the action with the user
   if (
     !confirm(
       `Are you sure you want to report ${lastWeekReportEl.textContent} for missing their duty?`
     )
-  ) {
+  )
     return
-  }
 
   try {
     reportButton.disabled = true
     reportResponseEl.textContent = 'Submitting report...'
-
-    // Send the POST request to our Worker's /report endpoint
     const response = await fetch(`${WORKER_URL}/report`, { method: 'POST' })
     const result = await response.json()
-
     reportResponseEl.textContent = result.message
-    // Refresh the schedule to show the new penalty status immediately
     fetchSchedule()
   } catch (error) {
-    reportResponseEl.textContent = 'An error occurred. Please try again.'
+    reportResponseEl.textContent = 'An error occurred.'
   } finally {
-    // Re-enable the button whether it succeeded or failed
     reportButton.disabled = false
   }
 })
 
-// Fetch the schedule for the first time when the page loads
+// Initial load
 document.addEventListener('DOMContentLoaded', fetchSchedule)

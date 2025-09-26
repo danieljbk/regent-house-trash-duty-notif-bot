@@ -1,54 +1,69 @@
+<!-- FINAL VERSION: index.html -->
 <!DOCTYPE html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Team Rotation Schedule</title>
-    <link rel="stylesheet" href="https://cdn.simplecss.org/simple.min.css" />
-    <style>
-      /* Add some styling for the report section */
-      .danger-zone {
-        border: 2px solid #d9534f;
-        padding: 1rem;
-        margin-top: 2rem;
-        border-radius: 8px;
-      }
-      .danger-zone button {
-        background-color: #d9534f;
-        color: white;
-        border: none;
-      }
-    </style>
+    <title>Regent House Trash Duty</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🗑️</text></svg>"
+    />
+    <link rel="stylesheet" href="style.css" />
   </head>
   <body>
     <header>
-      <h1>Team Rotation Schedule</h1>
-      <p id="penalty-status" style="color: #d9534f; font-weight: bold"></p>
+      <h1>Regent House Trash Duty</h1>
     </header>
+
     <main>
-      <h2>🎯 On Duty This Week</h2>
-      <p id="on-duty">Loading...</p>
+      <div
+        id="penalty-status"
+        class="penalty-banner"
+        style="display: none"
+      ></div>
 
-      <h2>⏮️ Last Week</h2>
-      <p id="last-week">Loading...</p>
+      <!-- Hero Card for This Week -->
+      <div class="card hero-card">
+        <p class="label">🎯 On Duty This Week</p>
+        <h2 class="person-name" id="on-duty">Loading...</h2>
+        <p class="date-range" id="on-duty-dates">Loading...</p>
+      </div>
 
-      <h2>🗓️ Coming Up</h2>
-      <ul id="upcoming-list">
-        <li>Loading...</li>
-      </ul>
+      <!-- Upcoming Schedule Card -->
+      <div class="card">
+        <p class="label">🗓️ Upcoming Schedule</p>
+        <table class="schedule-table">
+          <thead>
+            <tr>
+              <th>Person</th>
+              <th>Week of</th>
+            </tr>
+          </thead>
+          <tbody id="upcoming-list">
+            <!-- JS will populate this -->
+          </tbody>
+        </table>
+      </div>
 
-      <div class="danger-zone">
-        <h3>Missed Duty?</h3>
+      <!-- Danger Zone Card -->
+      <div class="card danger-zone">
+        <h3>⚠️ Missed Duty?</h3>
         <p>
           If the person on duty last week (<strong id="last-week-report"
             >...</strong
-          >) did not complete the task, press this button to assign them a
-          3-week penalty.
+          >) did not complete the task, press this button to assign a penalty.
         </p>
         <button id="report-button">Report Missed Duty</button>
         <p id="report-response"></p>
       </div>
+
+      <!-- Secondary Info -->
+      <div class="secondary-info">
+        <p>Last Week: <strong id="last-week">...</strong></p>
+      </div>
     </main>
+
     <script src="script.js"></script>
   </body>
 </html>
