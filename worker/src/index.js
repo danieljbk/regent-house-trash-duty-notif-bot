@@ -139,11 +139,13 @@ export default {
           (await rotationDb.get('PENALTY_BOX', 'json')) || {}
         const teamSize = team.length
 
+        // Base indices assume a normal rotation until we prove a penalty overrides it.
         const baseLastWeekIndex = (currentIndex - 1 + teamSize) % teamSize
         let onDutyName = team[currentIndex].name
         let lastWeekName = team[baseLastWeekIndex].name
         let penaltyInfo = {}
 
+        // Parse any stored penalty information and coerce the values we rely on.
         const offenderIndex = Number.isInteger(rawPenaltyBox.offenderIndex)
           ? rawPenaltyBox.offenderIndex
           : undefined
@@ -154,6 +156,8 @@ export default {
           offenderIndex !== undefined ? team[offenderIndex] : undefined
         const PENALTY_LENGTH = 3
         const penaltyRecorded = offender && weeksRemaining > 0
+        // When CURRENT_INDEX already matches the offender we treat the penalty as “active”
+        // even if weeksRemaining is still the initial value (meaning we just reassigned them).
         const penaltyIsCurrent =
           penaltyRecorded && offenderIndex === currentIndex
         const penaltyActive =
@@ -182,8 +186,10 @@ export default {
         }
 
         if (penaltyPending && offender) {
+          // Pending means we just recorded the penalty; last week is still the offender.
           lastWeekName = offender.name
         } else if (penaltyActive && offender) {
+          // Active means offender owns the present slot and we want both cards to reflect it.
           onDutyName = offender.name
           lastWeekName = offender.name
         }
@@ -246,11 +252,38 @@ export default {
       const currentIndex = parseInt(
         (await rotationDb.get('CURRENT_INDEX')) || '0'
       )
-      const offenderIndex = (currentIndex - 1 + teamSize) % teamSize
+      // Determine if a penalty is already active so we can decide who actually missed.
+      const existingPenalty =
+        (await rotationDb.get('PENALTY_BOX', 'json')) || {}
+      const hasActivePenalty =
+        Number.isInteger(existingPenalty.offenderIndex) &&
+        Number.isInteger(existingPenalty.weeksRemaining) &&
+        existingPenalty.weeksRemaining > 0
+      // If a penalty is active we penalize the same offender again; otherwise fall back to
+      // “last week’s” person based on rotation order.
+      const offenderIndex = hasActivePenalty
+        ? existingPenalty.offenderIndex
+        : (currentIndex - 1 + teamSize) % teamSize
 
       const penalty = { offenderIndex: offenderIndex, weeksRemaining: 3 }
       await rotationDb.put('PENALTY_BOX', JSON.stringify(penalty))
       await rotationDb.put('CURRENT_INDEX', offenderIndex.toString())
+
+      const offender = teamData[offenderIndex]
+      if (offender && offender.name) {
+        const penaltyMessage =
+          `⚠️ Penalty filed: ${offender.name} missed trash duty.` +
+          `\n${offender.name} is now assigned for the next 3 weeks.` +
+          `\n\nCheck the schedule: https://trashbot.kwon.ai`
+
+        const recipients = teamData.filter(
+          (member) => member && typeof member.phone === 'string' && member.phone
+        )
+
+        await Promise.allSettled(
+          recipients.map((member) => sendSms(env, member.phone, penaltyMessage))
+        )
+      }
 
       const responseData = {
         message:
